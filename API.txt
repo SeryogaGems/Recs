@@ -265,4 +265,4 @@ copy(world: World, entity: Entity, full: boolean): Id - клонирование
 
 boom(world: World): () - уничтожить все объекты в мире
 
-Cluster - новая абстрактная ячейка разделения
+Cluster - новая абстрактная ячейка разделения ++
