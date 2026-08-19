@@ -137,8 +137,8 @@ local worldEntities: number = 0
 local worldEntitesHead: number = 0
 local worldEntitiesTail: number = 0
 
-local worldComponentHead: number = 0
-local worldComponentTail: number = 0
+local worldComponentHead: number = 257
+local worldComponentTail: number = 257
 
 local worldMetaTail: number = 0
 
@@ -169,6 +169,24 @@ local function struct_create_chunk(struct: ComponentStruct, startIndex: number, 
 	end
 
 	return struct
+end
+
+local function struct_component_id(): Id
+	local entities = WORLD_ARRAY.entities
+
+	if worldComponentHead == worldComponentTail then return worldComponentHead end
+->
+	local zeroId: number
+
+	for id=worldComponentTail, worldComponentHead do
+		local mask = entities[id]
+		if mask ~= 0 then continue end
+
+		zeroId = id
+		worldComponentHead = id + 1
+	end
+
+	return zeroId
 end
 
 --Functions for working with basic world objects
@@ -349,7 +367,7 @@ local function etype(): Id
 	return worldTypes
 end
 
-local function component(): Entity
+local function component(): Id
 	if worldComponents == END_TYPE_ID then ecs_error(ERROR_COMPONENT_LIMIT) end
 	worldComponents += 1
 
@@ -358,18 +376,20 @@ local function component(): Entity
 
 	local dense = WORLD_ARRAY.dense_components
 	local sparse = WORLD_ARRAY.sparse_components
+
 	local denseLastIndex = #dense + 1
+	local entityID = struct_component_id()
 
 	dense[denseLastIndex] = componentStruct
-	sparse[worldComponents] = denseLastIndex
+	sparse[entityID] = denseLastIndex
+
+	return entityID
 end
 
 return table.freeze({
 	world = world,
 	etype = etype,
-	-- entity = ,
-	-- component = 
-	-- destroy
+	component = component,
 
 	Wildcard = EcsWildcard,
 	ChildOf = EcsChildOf,
