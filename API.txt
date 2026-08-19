@@ -63,14 +63,14 @@ meta = {
 Entity - [0..15]  [16..19]  [20..23] [24..31] => 32 bits // 4 bytes
           Chunk  Segment_ID Block_ID  Block 
 
-Component - [0..3] [4..7] => 12 bits // 1.5 bytes
-            Hooks    ID
+Component - [0..3] [4..7] => 8 bits // 1.5 bytes
+            Hooks   any
 
 Tag - [0..3] => 4 bits // 0.5 bytes
        Hooks
 
-Multi-component - [0..3]  [4..7]  [8..9]    => 14 bits // 1.75 bytes
-                   Hooks  Count   Special
+Multi-component - [0..3]  [4..7] => 12 bits // 1.75 bytes
+                   Hooks  Count 
 
 Group - [0..3] [4..11] [12..19]  => 20 bits // 2.5 bytes
          Hooks   Type x Type
