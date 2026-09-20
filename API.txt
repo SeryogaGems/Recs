@@ -56,7 +56,7 @@ Entity - [0..15] - chunk + [16..19] - segment + [20..23] - block + [24..31] - bi
 
 Group - [0..3] - hooks + [4..27] - relation + [28..51] - target => 52 bits (integer)
 
-Multi - [0..3] - hooks + [4..7] - table count => 8 bits (number?)
+Multi - [0..3] - hooks + [4..7] - table co4reddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddunt => 8 bits (number?)
 
 Component - [0..3] - hooks + [4..11] - any bits => 12 bits (number?)
 
