@@ -205,6 +205,10 @@ const ERROR_OVERFLOW_MESSAGE = [[
     Examples are provided in the library documentation.
 ]]
 
+const ERROR_COMPONENT_BEHAIVOR = [[
+    An attempt to assign component behavior to an Entity<number>.
+]]
+
 -- Rewriting a tag ]|
 const ERROR_TAG_MUTABLE = [[
     Adding values using Recs.set() for tags is prohibited. 
@@ -226,8 +230,8 @@ local _worldBasicComponents = 0
 local _worldEntity = 0
 
 -- Entity and component cache
-local _worldEntityCache = TCREATE(256) :: {number}
-local _worldComponentCache = BCREATE(256)
+local _worldEntityCache: {number}
+local _worldComponentCache: buffer
 
 -- Entity and component cache size (var)
 local _worldEntityCacheHead = 0
@@ -257,6 +261,11 @@ end
 -- If called again, the function will not be executed.
 -- @param count The number of entities in the world ]|
 export function world(count: number?): World
+    if not _WORLD_NULL then return _WORLD_ARRAY end
+
+    _worldComponentCache = BCREATE(256)
+    _worldEntityCache = TCREATE(256) :: {number}
+
     _WORLD_ARRAY = {}
 end
 
@@ -274,7 +283,7 @@ export function component <T> (): Entity<T>
     const dense = _WORLD_ARRAY[DENSE]
 
     local id = _worldComponentCacheHead == 0 and 
-        ID_COMPONENT_MAX + (_worldEntity + 1) + 1 or READU8(_worldComponentCache, _worldComponentCacheHead - 1)
+        ID_COMPONENT_MAX + (_worldEntity + 1) or READU8(_worldComponentCache, _worldComponentCacheHead - 1)
 
     if id > ID_COMPONENT_MAX then ecs_error(ERROR_OVERFLOW_MESSAGE) end
 
@@ -296,7 +305,7 @@ export function multi <T> (count: number?): Entity<T>
 
     local struct = chunkInit({}, 0, INDEX_CHUNK_VALUE + (count or 0))
     local id = _worldEntityCacheHead == 0 and 
-        _worldEntity + 1 or _worldEntityCache[_worldEntityCacheHead]
+        ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
     
     local denseIndex = #dense + 1
     sparse[id] = denseIndex
@@ -325,67 +334,111 @@ export function tag <T> (): Entity<boolean>
     return id :: __ecs_create_entity<T>
 end
 
-export function add <T, U> (entity: Entity<T>, component: Entity<U>): ()
-   
+export function add <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>): ()
+    const entities = _WORLD_ARRAY[ENTITIES]
+    const sparse = _WORLD_ARRAY[SPARSE]
+    const dense = _WORLD_ARRAY[DENSE]
 end
 
-export function remove <T, U> (entity: Entity<T>, component: Entity<U>): ()
+export function remove <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>): ()
+    const entities = _WORLD_ARRAY[ENTITIES]
+    const sparse = _WORLD_ARRAY[SPARSE]
+    const dense = _WORLD_ARRAY[DENSE]
+end
+
+export function get <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>): U?
+    const entities = _WORLD_ARRAY[ENTITIES]
+    const sparse = _WORLD_ARRAY[SPARSE]
+    const dense = _WORLD_ARRAY[DENSE]
+
+    local entityId = entities[entity] :: u64
+    local componentId = sparse[component] :: u32
+
+    local cmp_struct = dense[componentId] :: Struct<U>
+
+    local chunkIndex = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U16)
+    local ch_struct = cmp_struct[TONUMBER(chunkIndex)] :: Chunk<U>
+
+    local segmentIndex = EXTRACT64(entityId, BIT_INTEGER_U16, BIT_INTEGER_U4)
+    local sg_value_struct = ch_struct[INDEX_CHUNK_VALUE] :: SegmentValue<U>
+
+    local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
+    local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
+    local index = 64 * TONUMBER(blockIndex) + TONUMBER(bitmapIndex)
+
+    local tbl_struct = sg_value_struct[TONUMBER(segmentIndex)]
+    return tbl_struct[index + 1]
+end
+
+export function set <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>, value: U): ()
+    const entities = _WORLD_ARRAY[ENTITIES]
+    const sparse = _WORLD_ARRAY[SPARSE]
+    const dense = _WORLD_ARRAY[DENSE]
+
+    local entityId = entities[entity] :: u64
+    local componentId = sparse[component] :: u32
+
+    local cmp_struct = dense[componentId] :: Struct<U>
+
+    local chunkIndex = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U16)
+    local ch_struct = cmp_struct[TONUMBER(chunkIndex)] :: Chunk<U>
+
+    local segmentIndex = EXTRACT64(entityId, BIT_INTEGER_U16, BIT_INTEGER_U4)
+    local sg_value_struct = ch_struct[INDEX_CHUNK_VALUE] :: SegmentValue<U>
+
+    local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
+    local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
+    local index = 64 * TONUMBER(blockIndex) + TONUMBER(bitmapIndex)
+
+    local tbl_struct = sg_value_struct[TONUMBER(segmentIndex)]
+    tbl_struct[index + 1] = value
+end
+
+export function has <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>): boolean
+    const entities = _WORLD_ARRAY[ENTITIES]
+    const sparse = _WORLD_ARRAY[SPARSE]
+    const dense = _WORLD_ARRAY[DENSE]
+
+    local entityId = entities[entity] :: u64
+    local componentId = sparse[component] :: u32
+
+    local cmp_struct = dense[componentId] :: Struct<U>
+
+    local chunkIndex = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U16)
+    local ch_struct = cmp_struct[TONUMBER(chunkIndex)] :: Chunk<U> | LowChunk
+
+    local segmentIndex = EXTRACT64(entityId, BIT_INTEGER_U16, BIT_INTEGER_U4)
+    local sg_techbuffer_struct = ch_struct[INDEX_CHUNK_ENTITY] :: SegmentBuffer
+
+    local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
+    local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
+
+    local bf_struct = sg_techbuffer_struct[TONUMBER(segmentIndex)]
+    local mask = READINTEGER(bf_struct, TONUMBER(blockIndex) + 2)
+
+    return EXTRACT64(mask, bitmapIndex) ~= 0i
+end
+
+export function exist <T, U> (entity: Entity<T> | Group<Entity<T>, Entity<U>>): boolean
+    const entities = _WORLD_ARRAY[ENTITIES]
     
+    local entityId = entities[entity] :: u64 | u52 | u32
+    return entityId ~= 0
 end
 
-export function get <T, U> (entity: Entity<T>, component: Entity<U>): U?
-    const entities = _WORLD_ARRAY[ENTITIES]
+export function hook <T> (entity: Entity<T>, hook: number, callback: () -> ()): ()
+    const hookSignals = _WORLD_ARRAY[HOOK_CACHE]
     const sparse = _WORLD_ARRAY[SPARSE]
-    const dense = _WORLD_ARRAY[DENSE]
 
-    local entityId = entities[entity] :: u64
-    local componentId = sparse[component] :: u32
+    local densePointer = sparse[entity] :: u32
+    if not densePointer then ecs_error(ERROR_COMPONENT_BEHAIVOR) end
 
-    local cmp_struct = dense[componentId] :: Struct<U>
-
-    local chunkIndex = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U16)
-    local ch_struct = cmp_struct[TONUMBER(chunkIndex)] :: Chunk<U>
-
-    local segmentIndex = EXTRACT64(entityId, BIT_INTEGER_U16, BIT_INTEGER_U4)
-    local sg_value_struct = ch_struct[INDEX_CHUNK_VALUE] :: SegmentValue<U>
-
-    local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
-    local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
-    local index = 64 * TONUMBER(blockIndex) + TONUMBER(bitmapIndex)
-
-    local tbl_struct = sg_value_struct[TONUMBER(segmentIndex)]
-    return tbl_struct[index]
+    if hook == Add then end
+    if hook == Remove then return end
+    if hook == Changed then return end
 end
 
-export function set <T, U> (entity: Entity<T>, component: Entity<U>, value: U): ()
-    const entities = _WORLD_ARRAY[ENTITIES]
-    const sparse = _WORLD_ARRAY[SPARSE]
-    const dense = _WORLD_ARRAY[DENSE]
-
-    local entityId = entities[entity] :: u64
-    local componentId = sparse[component] :: u32
-
-    local cmp_struct = dense[componentId] :: Struct<U>
-
-    local chunkIndex = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U16)
-    local ch_struct = cmp_struct[TONUMBER(chunkIndex)] :: Chunk<U>
-
-    local segmentIndex = EXTRACT64(entityId, BIT_INTEGER_U16, BIT_INTEGER_U4)
-    local sg_value_struct = ch_struct[INDEX_CHUNK_VALUE] :: SegmentValue<U>
-
-    local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
-    local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
-    local index = 64 * TONUMBER(blockIndex) + TONUMBER(bitmapIndex)
-
-    local tbl_struct = sg_value_struct[TONUMBER(segmentIndex)]
-    tbl_struct[index] = value
-end
-
-export function has <T, U> (entity: Entity<T> | Group<Entity<T>, Entity<U>>): boolean
-    return true
-end
-
-export function clean <T> (entity: Entity<T>): ()
+export function clear <T> (entity: Entity<T>): ()
     
 end
 
