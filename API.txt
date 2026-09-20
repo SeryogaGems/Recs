@@ -3,78 +3,64 @@
 basic-component = {
     {} - chunk 1..0xFFFF
     {
-        [1] = 0xFFFF - chunk mask (fill / nil)
-        [2] = {} - segment 1..16
-        [3] = {
-            buffer.create([0x8, 0x20]) - block and block fields 1..8 (9 x int32)
-            buffer.create([id]) - entities 1..256 (256 x int32)
-            table.create([value]) - entity values 1..256 (256 x element_size)
-        }
-    } => 85680 (4096)
+        [1] = 0xFFFFi - chunk mask (fill / nil)
+        [2] = { buffer.create([0x4, 0x64]) - block and block fields 1..4 (5 uint_64) }
+        [3] = { buffer.create([id]) - block and block fields 1..256 (256 uint_32) }
+        [4] = { table.create([value]) - entity values 1..256 (256 x element_size) }
+    } => ~83,000 (4096)
 }
 
 multi-component = {
     {} - chunk 1..0xFFFF
     {
-        [1] = 0xFFFF - chunk mask (fill / nil)
-        [2] = {} - segment 1..16
-        [3] = {
-            buffer.create([0x8, 0x20]) - block and block fields 1..8 (9 x int32)
-            buffer.create([id]) - entities 1..256 (256 x int32)
-            table.create([value]) - entity values 1..256 (256 x element_size)
-            ...table.create([value]) 1..4
-        }
-    } => 285360 (4096)
+        [1] = 0xFFFFi - chunk mask (fill / nil)
+        [2] = { buffer.create([0x4, 0x64]) - block and block fields 1..4 (5 uint_64) }
+        [3] = { buffer.create([id]) - block and block fields 1..256 (256 uint_32) }
+        [4] = { table.create([value]) - entity values 1..256 (256 x element_size) }
+        [5..7] = { table.create([value]) - entity values 1..256 (256 x element_size) }
+    } => ~280,000 (4096)
 }
 
 tag = {
     {} - chunk 1..0xFFFF
     {
-        [1] = 0xFFFF - chunk mask (fill / nil)
-        [2] = buffer.create([0x8, 0x20]) - segment 1..16
-        [3] = buffer.create([0x8, 0x20]) - block and block fields 1..8 (9 x int32)
-    } => 1392 (4096)
+        [1] = 0xFFFFi - chunk mask (fill / nil)
+        [2] = { buffer.create([0x4, 0x64]) - block and block fields 1..4 (5 uint_64) }
+    } => ~800 (4096)
 }
 
 group = {
     {} - chunk 1..0xFFFF
     {
-        [1] = 0xFFFF - chunk mask (fill / nil)
-        [2] = {} - segment 1..16
-        [3] = {
-            buffer.create([0x8, 0x20]) - block and block fields 1..8 (9 x int32)
-            buffer.create([id]) - entities 1..256 (256 x int32)
-            table.create([value]) - entity values 1..256 (256 x element_size)
-        }
-    } => 85680 (4096)
+        [1] = 0xFFFFi - chunk mask (fill / nil)
+        [2] = { buffer.create([0x4, 0x64]) - block and block fields 1..4 (5 uint_64) }
+        [3] = { buffer.create([id]) - block and block fields 1..256 (256 uint_32) }
+        [4] = { table.create([value]) - entity values 1..256 (256 x element_size) }
+    } => ~83,000 (4096)
 }
 
 meta = {
     {} - chunk 1..0xFFFF
     {
-        [1] = 0xFFFF - chunk mask (fill [types] / full [types])
-        [2] = buffer.create([0x9, 0x20, 0x8]) - segment 1..16
-        [3] = buffer.create([0x9, 0x20, 0x8]) - block and block fields 1..8 and type_id (10 x int32)
-    } => 1328 (4096)
+        [1] = 0xFFFFi - chunk mask (fill [types] / full [types])
+        [2] = { buffer.create([0x4, 0x64]) - block and block fields 1..4 (5 uint_64) }
+        [3] = { buffer.create([id]) - block and block fields 1..256 (256 uint_32) }
+    } => ~1200 (4096)
 }
 
-//MASKS//
+//MASK STANDARDS//
 
-Entity - [0..15]  [16..19]  [20..23] [24..31] => 32 bits // 4 bytes
-          Chunk  Segment_ID Block_ID  Block 
+Etype - [0..15] - segment_cache => 16 bits (number)
 
-Component - [0..3] [4..7] => 8 bits // 1.5 bytes
-            Hooks   any
+Entity - [0..15] - chunk + [16..19] - segment + [20..23] - block + [24..31] - bitmap + [56..63] - cluster => 64 bits (integer)
 
-Tag - [0..3] => 4 bits // 0.5 bytes
-       Hooks
+Group - [0..3] - hooks + [4..27] - relation + [28..51] - target => 52 bits (integer)
 
-Multi-component - [0..3]  [4..7] => 12 bits // 1.75 bytes
-                   Hooks  Count 
+Multi - [0..3] - hooks + [4..7] - table count => 8 bits (number?)
 
-Group - [0..3] [4..11] [12..19]  => 20 bits // 2.5 bytes
-         Hooks   Type x Type
+Component - [0..3] - hooks + [4..11] - any bits => 12 bits (number?)
 
+Tag - [0..3] - hooks => 4 bits (number?)
 
 //CACHE//
 
