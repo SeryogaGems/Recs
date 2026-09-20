@@ -26,7 +26,8 @@ tag = {
     {
         [1] = 0xFFFFi - chunk mask (fill / nil)
         [2] = { buffer.create([0x4, 0x64]) - block and block fields 1..4 (5 uint_64) }
-    } => ~800 (4096)
+        [3] = { buffer.create([id]) - block and block fields 1..256 (256 uint_32) }
+    } => ~1200 (4096)
 }
 
 group = {
@@ -44,8 +45,7 @@ meta = {
     {
         [1] = 0xFFFFi - chunk mask (fill [types] / full [types])
         [2] = { buffer.create([0x4, 0x64]) - block and block fields 1..4 (5 uint_64) }
-        [3] = { buffer.create([id]) - block and block fields 1..256 (256 uint_32) }
-    } => ~1200 (4096)
+    } => ~800 (4096)
 }
 
 //MASK STANDARDS//
@@ -56,7 +56,7 @@ Entity - [0..15] - chunk + [16..19] - segment + [20..23] - block + [24..31] - bi
 
 Group - [0..3] - hooks + [4..27] - relation + [28..51] - target => 52 bits (integer)
 
-Multi - [0..3] - hooks + [4..7] - table co4reddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddunt => 8 bits (number?)
+Multi - [0..3] - hooks + [4..7] - table count => 8 bits (number?)
 
 Component - [0..3] - hooks + [4..11] - any bits => 12 bits (number?)
 
