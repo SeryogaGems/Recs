@@ -64,9 +64,7 @@ type Struct <U> = {Chunk <U> | LowChunk}
 -- Types for special caches
 type QueryCache = {[IndexId]: {}}
 type GroupCache = {[u52]: IndexId}
-type HookSignals = {[IndexId]: {
-    (entity: Entity<number>, component: Entity<unknown>, ...unknown) -> (any)
-}}
+type HookSignals = {[IndexId]: { Callback }}
 
 -- Basic types of world tables ]|
 type Entities = {[IndexId]: u64 | u52 | u32}
@@ -78,6 +76,7 @@ type Pack = {[string]: IndexId}
 -- |[]|
 type Entity<T> = { read __T: T }
 type Group<Relation, Target> = __ecs_group<Relation, Target>
+type Callback = (entity: Entity<number>, component: Entity<unknown>, ...unknown) -> (any)
 
 -- Exported types |[]|
 export type Id<T> = { read __T: T }
@@ -228,6 +227,7 @@ local _entityIdHead = ID_COMPONENT_MAX + 1
 local _worldTypes = 0
 local _worldBasicComponents = 0
 local _worldEntity = 0
+local _worldHooks = 0
 
 -- Entity and component cache
 local _worldEntityCache: {number}
@@ -248,11 +248,15 @@ const function ecs_error(errorMessage: string): never
     error(`[RECS]: {errorMessage}`)
 end
 
-const function chunkInit <U> (componentStruct: Struct<U>, componentChunkHead: number, size: number): Struct<U>
-    return componentStruct
+const function chunkInit <U> (componentStruct: Struct<U>, size: number, componentChunkHead: number?): Chunk<U>? | LowChunk
+    return
 end
 
-const function metaInit(): {LowChunk}
+const function entitiesInit(entities: Entities): ()
+    
+end
+
+const function metaInit(dense: Dense<any>): ()
     
 end
 
@@ -263,96 +267,191 @@ end
 export function world(count: number?): World
     if not _WORLD_NULL then return _WORLD_ARRAY end
 
-    _worldComponentCache = BCREATE(256)
+    _worldComponentCache = BCREATE(256) :: buffer
     _worldEntityCache = TCREATE(256) :: {number}
 
-    _WORLD_ARRAY = {}
+    local entities = table.create(1024) :: Entities
+    local dense = table.create(256) :: Dense<any>
+    local segment_cache = table.create(256) :: Cache
+    local hooks_cache = table.create(256) :: HookSignals
+    local query_cache = {} :: QueryCache
+    local target_graph_cache = {} :: Cache
+    local relation_graph_cache = {} :: Cache
+    local group_cache = {} :: GroupCache
+    local sparse = {} :: Sparse
+
+    entitiesInit(entities)
+    metaInit(dense)
+
+    _WORLD_ARRAY = { entities, sparse, dense, segment_cache, group_cache, relation_graph_cache, target_graph_cache, query_cache, hooks_cache }
+
+    return _WORLD_ARRAY
 end
 
 export function etype(): IndexId
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
     return 0
 end
 
 export function entity <T> (etypeId: number): Entity<number>
-   return 0 :: __ecs_create_entity<T>
+    const entities = _WORLD_ARRAY[ENTITIES]
+    const segments = _WORLD_ARRAY[SEGMENT_CACHE]
+
+    local id = _worldEntityCacheHead == 0 and 
+        ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
+
+   return id :: __ecs_create_entity<T>
 end
 
 export function component <T> (): Entity<T>
-    const entities = _WORLD_ARRAY[ENTITIES]
-    const sparse = _WORLD_ARRAY[SPARSE]
-    const dense = _WORLD_ARRAY[DENSE]
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
+    const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
+    const dense = _WORLD_ARRAY[DENSE] :: Dense<T>
 
     local id = _worldComponentCacheHead == 0 and 
-        ID_COMPONENT_MAX + (_worldEntity + 1) or READU8(_worldComponentCache, _worldComponentCacheHead - 1)
+        ID_TYPE_MAX + (_worldBasicComponents + 1) or READU8(_worldComponentCache, _worldComponentCacheHead - 1)
 
     if id > ID_COMPONENT_MAX then ecs_error(ERROR_OVERFLOW_MESSAGE) end
 
-    local struct = chunkInit({}, 0, INDEX_CHUNK_VALUE)
+    local struct = chunkInit({}, INDEX_CHUNK_VALUE)
 
     local denseIndex = #dense + 1
     sparse[id] = denseIndex
-    dense[denseIndex] = chunkInit({}, 0, INDEX_CHUNK_TECH)
+    
+    local denseStruct = {}
+    chunkInit(denseStruct, INDEX_CHUNK_VALUE)
+    dense[denseIndex] = denseStruct
 
     entities[id] = BOR(ECS_MASK_ACTIVE, BLSHIFT(1, BIT_NUMBER_U4))
+    _worldBasicComponents += 1
 
     return id :: __ecs_create_entity<T>
 end
 
 export function multi <T> (count: number?): Entity<T>
-    const entities = _WORLD_ARRAY[ENTITIES]
-    const sparse = _WORLD_ARRAY[SPARSE]
-    const dense = _WORLD_ARRAY[DENSE]
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
+    const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
+    const dense = _WORLD_ARRAY[DENSE] :: Dense<T>
 
-    local struct = chunkInit({}, 0, INDEX_CHUNK_VALUE + (count or 0))
+    local struct = chunkInit({}, INDEX_CHUNK_VALUE + (count or 0))
     local id = _worldEntityCacheHead == 0 and 
         ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
     
     local denseIndex = #dense + 1
     sparse[id] = denseIndex
-    dense[denseIndex] = chunkInit({}, 0, INDEX_CHUNK_TECH)
+    
+    local denseStruct = {}
+    chunkInit(denseStruct, INDEX_CHUNK_VALUE + (count or 0))
+    dense[denseIndex] = denseStruct
 
     entities[id] = BOR(ECS_MASK_ACTIVE, BLSHIFT(count or 0, BIT_NUMBER_U4))
+    _worldEntity += 1
 
     return id :: __ecs_create_entity<T>
 end
 
-export function tag <T> (): Entity<boolean>
-    const entities = _WORLD_ARRAY[ENTITIES]
-    const sparse = _WORLD_ARRAY[SPARSE]
-    const dense = _WORLD_ARRAY[DENSE]
+export function tag <T> (): Entity<T>
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
+    const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
+    const dense = _WORLD_ARRAY[DENSE] :: Dense<T>
 
-    local struct = chunkInit({}, 0, INDEX_CHUNK_TECH)
     local id = _worldEntityCacheHead == 0 and 
         ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
 
     local denseIndex = #dense + 1
     sparse[id] = denseIndex
-    dense[denseIndex] = chunkInit({}, 0, INDEX_CHUNK_TECH)
+    
+    local denseStruct = {}
+    chunkInit(denseStruct, INDEX_CHUNK_VALUE)
+    dense[denseIndex] = denseStruct
 
     entities[id] = ECS_MASK_ACTIVE
+    _worldEntity += 1
 
     return id :: __ecs_create_entity<T>
 end
 
 export function add <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>): ()
-    const entities = _WORLD_ARRAY[ENTITIES]
-    const sparse = _WORLD_ARRAY[SPARSE]
-    const dense = _WORLD_ARRAY[DENSE]
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
+    const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
+    const dense = _WORLD_ARRAY[DENSE] :: Dense<U>
+
+    local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64
+    local componentId = sparse[component :: __ecs_is_entity<typeof(component)>] :: u32
+
+    local cmp_struct = dense[componentId] :: Struct<U>
+
+    local chunkIndex = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U16)
+    local ch_struct = cmp_struct[TONUMBER(chunkIndex)] :: Chunk<U> | LowChunk
+    if not ch_struct then end
+
+    local segmentIndex = EXTRACT64(entityId, BIT_INTEGER_U16, BIT_INTEGER_U4)
+    local segmentNumber = TONUMBER(segmentIndex)
+
+    local sg_techbuffer_struct = ch_struct[INDEX_CHUNK_BITMAP] :: SegmentBuffer
+    local tech_buffer = sg_techbuffer_struct[segmentNumber] :: buffer?
+    if not tech_buffer then end
+
+    local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
+    local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
+
+    local offset = TONUMBER(blockIndex) + 2
+    local mask = READINTEGER(tech_buffer :: buffer, offset)
+
+    mask = XOR(mask, LSHIFT(1i, bitmapIndex))
+    WRITEINTEGER(tech_buffer :: buffer, offset, mask)
+
+    local sg_entitybuffer_struct = ch_struct[INDEX_CHUNK_ENTITY] :: SegmentBuffer
+    local entity_buffer = sg_entitybuffer_struct[segmentNumber] :: buffer
+    WRITEU32(entity_buffer, offset, entity :: T)
+
+    if _worldHooks == 0 then return end
 end
 
 export function remove <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>): ()
-    const entities = _WORLD_ARRAY[ENTITIES]
-    const sparse = _WORLD_ARRAY[SPARSE]
-    const dense = _WORLD_ARRAY[DENSE]
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
+    const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
+    const dense = _WORLD_ARRAY[DENSE] :: Dense<U>
+
+    local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64
+    local componentId = sparse[component :: __ecs_is_entity<typeof(component)>] :: u32
+
+    local cmp_struct = dense[componentId] :: Struct<U>
+
+    local chunkIndex = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U16)
+    local ch_struct = cmp_struct[TONUMBER(chunkIndex)] :: Chunk<U> | LowChunk
+
+    local segmentIndex = EXTRACT64(entityId, BIT_INTEGER_U16, BIT_INTEGER_U4)
+    local segmentNumber = TONUMBER(segmentIndex)
+
+    local sg_techbuffer_struct = ch_struct[INDEX_CHUNK_BITMAP] :: SegmentBuffer
+    local sg_entitybuffer_struct = ch_struct[INDEX_CHUNK_ENTITY] :: SegmentBuffer
+
+    local tech_buffer = sg_techbuffer_struct[segmentNumber] :: buffer
+    local entity_buffer = sg_entitybuffer_struct[segmentNumber] :: buffer
+
+    local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
+    local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
+
+    local offset = TONUMBER(blockIndex) + 2
+    local mask = READINTEGER(tech_buffer :: buffer, offset)
+
+    mask = XOR(mask, LSHIFT(1i, bitmapIndex))
+    if EXTRACT64(mask, bitmapIndex) ~= BIT_INTEGER_ZERO then return end
+
+    WRITEINTEGER(tech_buffer :: buffer, offset, mask)
+    WRITEU32(entity_buffer, offset, BIT_NUMBER_ZERO)
+
+    if _worldHooks == 0 then return end
 end
 
 export function get <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>): U?
-    const entities = _WORLD_ARRAY[ENTITIES]
-    const sparse = _WORLD_ARRAY[SPARSE]
-    const dense = _WORLD_ARRAY[DENSE]
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
+    const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
+    const dense = _WORLD_ARRAY[DENSE] :: Dense<U>
 
-    local entityId = entities[entity] :: u64
-    local componentId = sparse[component] :: u32
+    local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64
+    local componentId = sparse[component :: __ecs_is_entity<typeof(component)>] :: u32
 
     local cmp_struct = dense[componentId] :: Struct<U>
 
@@ -371,12 +470,12 @@ export function get <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<E
 end
 
 export function set <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>, value: U): ()
-    const entities = _WORLD_ARRAY[ENTITIES]
-    const sparse = _WORLD_ARRAY[SPARSE]
-    const dense = _WORLD_ARRAY[DENSE]
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
+    const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
+    const dense = _WORLD_ARRAY[DENSE] :: Dense<U>
 
-    local entityId = entities[entity] :: u64
-    local componentId = sparse[component] :: u32
+    local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64
+    local componentId = sparse[component :: __ecs_is_entity<typeof(component)>] :: u32
 
     local cmp_struct = dense[componentId] :: Struct<U>
 
@@ -392,41 +491,45 @@ export function set <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<E
 
     local tbl_struct = sg_value_struct[TONUMBER(segmentIndex)]
     tbl_struct[index + 1] = value
+
+    if _worldHooks == 0 then return end
 end
 
 export function has <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>): boolean
-    const entities = _WORLD_ARRAY[ENTITIES]
-    const sparse = _WORLD_ARRAY[SPARSE]
-    const dense = _WORLD_ARRAY[DENSE]
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
+    const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
+    const dense = _WORLD_ARRAY[DENSE] :: Dense<U>
 
-    local entityId = entities[entity] :: u64
-    local componentId = sparse[component] :: u32
+    local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64
+    local componentId = sparse[component :: __ecs_is_entity<typeof(component)>] :: u32
 
     local cmp_struct = dense[componentId] :: Struct<U>
 
     local chunkIndex = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U16)
-    local ch_struct = cmp_struct[TONUMBER(chunkIndex)] :: Chunk<U> | LowChunk
+    local ch_struct = cmp_struct[TONUMBER(chunkIndex)] :: Chunk<U>? | LowChunk?
+    if not ch_struct then return false end
 
     local segmentIndex = EXTRACT64(entityId, BIT_INTEGER_U16, BIT_INTEGER_U4)
-    local sg_techbuffer_struct = ch_struct[INDEX_CHUNK_ENTITY] :: SegmentBuffer
+    local sg_techbuffer_struct = ch_struct[INDEX_CHUNK_BITMAP] :: SegmentBuffer
+
+    local bf_struct = sg_techbuffer_struct[TONUMBER(segmentIndex)] :: buffer?
+    if not bf_struct then return false end
 
     local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
     local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
+    local mask = READINTEGER(bf_struct :: buffer, TONUMBER(blockIndex) + 2)
 
-    local bf_struct = sg_techbuffer_struct[TONUMBER(segmentIndex)]
-    local mask = READINTEGER(bf_struct, TONUMBER(blockIndex) + 2)
-
-    return EXTRACT64(mask, bitmapIndex) ~= 0i
+    return EXTRACT64(mask, bitmapIndex) ~= BIT_INTEGER_ZERO
 end
 
 export function exist <T, U> (entity: Entity<T> | Group<Entity<T>, Entity<U>>): boolean
-    const entities = _WORLD_ARRAY[ENTITIES]
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
     
-    local entityId = entities[entity] :: u64 | u52 | u32
-    return entityId ~= 0
+    local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64 | u52 | u32
+    return entityId ~= BIT_NUMBER_ZERO
 end
 
-export function hook <T> (entity: Entity<T>, hook: number, callback: () -> ()): ()
+export function hook <T> (entity: Entity<T>, hook: number, callback: Callback): ()
     const hookSignals = _WORLD_ARRAY[HOOK_CACHE]
     const sparse = _WORLD_ARRAY[SPARSE]
 
@@ -468,22 +571,25 @@ export function group <T, U> (relation: Entity<T>, target: Entity<U>): Group<Ent
     local id = groups[uint_48]
     if id then return id :: Group<typeof(relation), typeof(target)> end
 
-    local struct = chunkInit({}, 0, INDEX_CHUNK_VALUE)
     id = _worldEntityCacheHead == 0 and 
         ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
+    
+    groups[uint_48] = id
+    entities[id] = uint_48
+    _worldEntity += 1
 
     local denseIndex = #dense + 1
     sparse[id] = denseIndex
-    dense[denseIndex] = chunkInit({}, 0, INDEX_CHUNK_TECH)
     
-    local ecs_hook = ICREATE(ECS_MASK_ACTIVE) -- 0b0001
-    local uint_52 = LSHIFT(uint_48, 4i) -- 0b0000_u52
-    local mask = OR(ecs_hook, uint_52) -- 0b0001_u52
-
-    entities[id] = mask
-    groups[uint_48] = id
+    local denseStruct = {}
+    chunkInit(denseStruct, INDEX_CHUNK_VALUE)
+    dense[denseIndex] = denseStruct
 
     return id :: Group<Entity<T>, Entity<U>>
+end
+
+const function disable(entity: Entity<number>): ()
+    
 end
 
 const function fast_group <T, U> (relation: Entity<T>, target: Entity<U>): Group<Entity<T>, Entity<U>>
@@ -503,26 +609,44 @@ const function fast_group <T, U> (relation: Entity<T>, target: Entity<U>): Group
     id = _worldEntityCacheHead == 0 and 
          ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
 
-    local ecs_hook = ICREATE(ECS_MASK_ACTIVE) -- 0b0001
-    local uint_52 = LSHIFT(uint_48, 4i) -- 0b0000_u52
-    local mask = OR(ecs_hook, uint_52) -- 0b0001_u52
-
-    entities[id] = mask
+    id = _worldEntityCacheHead == 0 and 
+        ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
+    
     groups[uint_48] = id
+    entities[id] = uint_48
+    _worldEntity += 1
 
     return id :: Group<Entity<T>, Entity<U>>
 end
 
-const function target <T,U> (entity: Entity<T>, relation: Entity<U>): Entity<any>
+const function target <T, U> (entity: Entity<T>, relation: Entity<U>): Entity<any>
     return 0 :: __ecs_create_entity<T>
 end
 
-const function relation <T,U> (entity: Entity<T>, target: Entity<U>): Entity<any>
+const function relation <T, U> (entity: Entity<T>, target: Entity<U>): Entity<any>
     return 0 :: __ecs_create_entity<T>
+end
+
+const function first <T, U> (group: Group<Entity<T>, Entity<U>>): Entity<T>
+    return 0 :: __ecs_create_entity<T>
+end
+
+const function second <T, U> (group: Group<Entity<T>, Entity<U>>): Entity<any>
+    return 0 :: __ecs_create_entity<U>
 end
 
 export const Relations = {
     fast_group = fast_group,
     target = target,
-    relation = relation
+    relation = relation,
+    first = first,
+    second = second
+}
+
+export const Query = {
+
+}
+
+export const Profiler = {
+
 }
