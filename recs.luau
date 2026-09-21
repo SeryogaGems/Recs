@@ -151,6 +151,7 @@ const ELEMENTS_META = 0x1 -- 1
 const ELEMENTS_META_SEGMENT_META = 0x6 -- 6
 
 -- Byte representation of bit types |[]|
+const BYTE_U64 = 0x8 -- 8 bytes
 const BYTE_U32 = 0x4 -- 4 bytes
 const BYTE_U16 = 0x2 -- 2 bytes
 
@@ -395,7 +396,7 @@ export function add <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<E
     local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
     local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
 
-    local offset = TONUMBER(blockIndex) + 2
+    local offset = 1 + TONUMBER(blockIndex) * BYTE_U64
     local mask = READINTEGER(tech_buffer :: buffer, offset)
 
     mask = XOR(mask, LSHIFT(1i, bitmapIndex))
@@ -433,7 +434,7 @@ export function remove <T, U, V> (entity: Entity<T>, component: Entity<U> | Grou
     local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
     local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
 
-    local offset = TONUMBER(blockIndex) + 2
+    local offset = 1 + TONUMBER(blockIndex) * BYTE_U64
     local mask = READINTEGER(tech_buffer :: buffer, offset)
 
     mask = XOR(mask, LSHIFT(1i, bitmapIndex))
@@ -517,7 +518,9 @@ export function has <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<E
 
     local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
     local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
-    local mask = READINTEGER(bf_struct :: buffer, TONUMBER(blockIndex) + 2)
+
+    local offset = 1 + TONUMBER(blockIndex) * BYTE_U64
+    local mask = READINTEGER(bf_struct :: buffer, offset)
 
     return EXTRACT64(mask, bitmapIndex) ~= BIT_INTEGER_ZERO
 end
