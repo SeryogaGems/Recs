@@ -276,45 +276,41 @@ const function _allocateSegment <U> (chunk: Chunk<U> | LowChunk, position: numbe
     local valuetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {U} or TCREATE(256) :: {U}
     valuetbl_struct[position] = valuetbl
 
-    if size > INDEX_CHUNK_VALUE then
-        local multivalues = size - INDEX_CHUNK_VALUE
+    if size == INDEX_CHUNK_VALUE then return techbuf, entitybuf end
+        
+    local multivalues = size - INDEX_CHUNK_VALUE
 
-        if multivalues == 4 then
-            local multivaluetbl_struct = chunk[INDEX_CHUNK_VALUE + 4] :: SegmentValue<unknown>
+    if multivalues == 4 then
+        local multivaluetbl_struct = chunk[INDEX_CHUNK_VALUE + 4] :: SegmentValue<unknown>
 
-            local multivaluetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {unknown} or TCREATE(256) :: {unknown}
-            multivaluetbl_struct[position] = multivaluetbl
+        local multivaluetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {unknown} or TCREATE(256) :: {unknown}
+        multivaluetbl_struct[position] = multivaluetbl
 
-            return techbuf, entitybuf
-        end
-
-        if multivalues == 3 then
-            local multivaluetbl_struct = chunk[INDEX_CHUNK_VALUE + 3] :: SegmentValue<unknown>
-
-            local multivaluetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {unknown} or TCREATE(256) :: {unknown}
-            multivaluetbl_struct[position] = multivaluetbl
-
-            return techbuf, entitybuf
-        end
-
-        if multivalues == 2 then
-            local multivaluetbl_struct = chunk[INDEX_CHUNK_VALUE + 2] :: SegmentValue<unknown>
-
-            local multivaluetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {unknown} or TCREATE(256) :: {unknown}
-            multivaluetbl_struct[position] = multivaluetbl
-
-            return techbuf, entitybuf
-        end
-
-        if multivalues == 1 then
-            local multivaluetbl_struct = chunk[INDEX_CHUNK_VALUE + 1] :: SegmentValue<unknown>
-
-            local multivaluetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {unknown} or TCREATE(256) :: {unknown}
-            multivaluetbl_struct[position] = multivaluetbl
-
-            return techbuf, entitybuf
-        end
+        return techbuf, entitybuf
     end
+
+    if multivalues == 3 then
+        local multivaluetbl_struct = chunk[INDEX_CHUNK_VALUE + 3] :: SegmentValue<unknown>
+
+        local multivaluetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {unknown} or TCREATE(256) :: {unknown}
+        multivaluetbl_struct[position] = multivaluetbl
+
+        return techbuf, entitybuf
+    end
+
+    if multivalues == 2 then
+        local multivaluetbl_struct = chunk[INDEX_CHUNK_VALUE + 2] :: SegmentValue<unknown>
+
+        local multivaluetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {unknown} or TCREATE(256) :: {unknown}
+        multivaluetbl_struct[position] = multivaluetbl
+
+        return techbuf, entitybuf
+    end
+
+    local multivaluetbl_struct = chunk[INDEX_CHUNK_VALUE + 1] :: SegmentValue<unknown>
+
+    local multivaluetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {unknown} or TCREATE(256) :: {unknown}
+    multivaluetbl_struct[position] = multivaluetbl
 
     return techbuf, entitybuf
 end
@@ -477,24 +473,33 @@ export function add <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<E
     local segmentNumber = TONUMBER(segmentIndex)
 
     local sg_techbuffer_struct = ch_struct[INDEX_CHUNK_BITMAP] :: SegmentBuffer
+    local sg_entitybuffer_struct = ch_struct[INDEX_CHUNK_ENTITY] :: SegmentBuffer
+
     local tech_buffer = sg_techbuffer_struct[segmentNumber] :: buffer?
+    local entity_buffer = sg_entitybuffer_struct[segmentNumber] :: buffer?
 
     if not tech_buffer then 
-        tech_buffer = _allocateSegment(ch_struct, segmentNumber, #ch_struct) 
+        tech_buffer, entity_buffer = _allocateSegment(ch_struct, segmentNumber, #ch_struct) 
     end
 
     local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
     local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
 
     local offset = 1 + TONUMBER(blockIndex) * BYTE_U64
+
     local mask = READINTEGER(tech_buffer :: buffer, offset)
+    
+    if mask == BIT_INTEGER_ZERO then
+        local sg_bitmap = READINTEGER(tech_buffer :: buffer, BIT_NUMBER_ZERO)
+
+        sg_bitmap = XOR(sg_bitmap, LSHIFT(1i, blockIndex))
+        WRITEINTEGER(tech_buffer :: buffer, BIT_NUMBER_ZERO, sg_bitmap)
+    end
 
     mask = XOR(mask, LSHIFT(1i, bitmapIndex))
-    WRITEINTEGER(tech_buffer :: buffer, offset, mask)
 
-    local sg_entitybuffer_struct = ch_struct[INDEX_CHUNK_ENTITY] :: SegmentBuffer
-    local entity_buffer = sg_entitybuffer_struct[segmentNumber] :: buffer
-    WRITEU32(entity_buffer, offset, entity :: T)
+    WRITEINTEGER(tech_buffer :: buffer, offset, mask)
+    WRITEU32(entity_buffer :: buffer, offset, entity :: T)
 
     if _worldHooks == 0 then return end
 end
@@ -525,10 +530,16 @@ export function remove <T, U, V> (entity: Entity<T>, component: Entity<U> | Grou
     local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
 
     local offset = 1 + TONUMBER(blockIndex) * BYTE_U64
-    local mask = READINTEGER(tech_buffer :: buffer, offset)
 
+    local mask = READINTEGER(tech_buffer :: buffer, offset)
     mask = XOR(mask, LSHIFT(1i, bitmapIndex))
-    if EXTRACT64(mask, bitmapIndex) ~= BIT_INTEGER_ZERO then return end
+
+    if mask == BIT_INTEGER_ZERO then
+        local sg_bitmap = READINTEGER(tech_buffer, BIT_NUMBER_ZERO)
+
+        sg_bitmap = XOR(sg_bitmap, LSHIFT(1i, blockIndex))
+        WRITEINTEGER(tech_buffer, BIT_NUMBER_ZERO, sg_bitmap)
+    end
 
     WRITEINTEGER(tech_buffer :: buffer, offset, mask)
     WRITEU32(entity_buffer, offset, BIT_NUMBER_ZERO)
