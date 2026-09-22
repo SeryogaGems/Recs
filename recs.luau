@@ -156,8 +156,8 @@ const BYTE_U32 = 0x4 -- 4 bytes
 const BYTE_U16 = 0x2 -- 2 bytes
 
 -- |[]|
-const BUFFER_BLOCK_OFFSET = 0
-const BUFFER_META_TYPE_OFFSET = 6
+const BUFFER_BLOCK_OFFSET = 0x0
+const BUFFER_META_TYPE_OFFSET = 0x6
 
 const INDEX_CHUNK_BITMAP = 1
 const INDEX_CHUNK_TECH = 2
@@ -231,12 +231,16 @@ local _worldEntity = 0
 local _worldHooks = 0
 
 -- Entity and component cache
-local _worldEntityCache: {number}
+local _worldEntityCache: { number? }
+local _worldChunkCache: { Chunk<unknown>? }
+local _worldLowChunkCache: { LowChunk? }
+local _worldSegmentTableCache: { {} }
 local _worldComponentCache: buffer
 
 -- Entity and component cache size (var)
 local _worldEntityCacheHead = 0
 local _worldComponentCacheHead = 0
+local _worldSegmentTableCacheHead = 0
 
 -- Packed objects
 local _worldPacked = {} :: Pack
@@ -249,29 +253,100 @@ const function ecs_error(errorMessage: string): never
     error(`[RECS]: {errorMessage}`)
 end
 
-const function chunkInit <U> (componentStruct: Struct<U>, size: number, componentChunkHead: number?): Chunk<U>? | LowChunk
-    return
+const function _allocateChunk <U> (componentStruct: Struct<U>, size: number, componentChunkHead: number?): Chunk<U>? | LowChunk
+    local chunk: Chunk<U> | LowChunk
+
+    return chunk
 end
 
-const function entitiesInit(entities: Entities): ()
+const function _allocateSegment <U> (chunk: Chunk<U> | LowChunk, position: number, size: number): (buffer, buffer)
+    local techbuf_struct = chunk[INDEX_CHUNK_TECH] :: SegmentBuffer
+    local entitybuf_struct = chunk[INDEX_CHUNK_ENTITY] :: SegmentBuffer
+
+    local techbuf = BCREATE(40)
+    local entitybuf = BCREATE(1024)
+
+    techbuf_struct[position] = techbuf
+    entitybuf_struct[position] = entitybuf
+
+    if size == INDEX_CHUNK_ENTITY then return techbuf, entitybuf end
     
+    local valuetbl_struct = chunk[INDEX_CHUNK_VALUE] :: SegmentValue<U>
+
+    local valuetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {U} or TCREATE(256) :: {U}
+    valuetbl_struct[position] = valuetbl
+
+    if size > INDEX_CHUNK_VALUE then
+        local multivalues = size - INDEX_CHUNK_VALUE
+
+        if multivalues == 4 then
+            local multivaluetbl_struct = chunk[INDEX_CHUNK_VALUE + 4] :: SegmentValue<unknown>
+
+            local multivaluetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {unknown} or TCREATE(256) :: {unknown}
+            multivaluetbl_struct[position] = multivaluetbl
+
+            return techbuf, entitybuf
+        end
+
+        if multivalues == 3 then
+            local multivaluetbl_struct = chunk[INDEX_CHUNK_VALUE + 3] :: SegmentValue<unknown>
+
+            local multivaluetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {unknown} or TCREATE(256) :: {unknown}
+            multivaluetbl_struct[position] = multivaluetbl
+
+            return techbuf, entitybuf
+        end
+
+        if multivalues == 2 then
+            local multivaluetbl_struct = chunk[INDEX_CHUNK_VALUE + 2] :: SegmentValue<unknown>
+
+            local multivaluetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {unknown} or TCREATE(256) :: {unknown}
+            multivaluetbl_struct[position] = multivaluetbl
+
+            return techbuf, entitybuf
+        end
+
+        if multivalues == 1 then
+            local multivaluetbl_struct = chunk[INDEX_CHUNK_VALUE + 1] :: SegmentValue<unknown>
+
+            local multivaluetbl = _worldSegmentTableCache[_worldSegmentTableCacheHead] :: {unknown} or TCREATE(256) :: {unknown}
+            multivaluetbl_struct[position] = multivaluetbl
+
+            return techbuf, entitybuf
+        end
+    end
+
+    return techbuf, entitybuf
 end
 
-const function metaInit(dense: Dense<any>): ()
+const function _allocateEntities(entities: Entities): ()
+    _worldTypes = ID_SPECIAL_MAX
     
+    for i = 1 :: u32, ID_SPECIAL_MAX do
+        entities[i] = i
+    end
+end
+
+const function _metaInit(dense: Dense<any>, chunksCount: number): ()
+    local meta = {}
+    
+    _allocateChunk(meta, INDEX_CHUNK_TECH)
+    _structChunkHead = chunksCount
+
+    dense[1] = meta
 end
 
 -- Creates a single, shared world instance with entity fields, components (sparse and dense), 
 -- group graph caches, type segments, and queries. Preloads custom types and meta components.
 -- If called again, the function will not be executed.
--- @param count The number of entities in the world ]|
+-- @param count The number of entities in the world
 export function world(count: number?): World
     if not _WORLD_NULL then return _WORLD_ARRAY end
 
-    _worldComponentCache = BCREATE(256) :: buffer
-    _worldEntityCache = TCREATE(256) :: {number}
+    local entitySize = (count or ELEMENTS_STRUCT_CHUNK_ENTITY * 5) + ID_COMPONENT_MAX
+    local chunksCount = entitySize // ELEMENTS_STRUCT_CHUNK_ENTITY
 
-    local entities = table.create(1024) :: Entities
+    local entities = table.create(entitySize) :: Entities
     local dense = table.create(256) :: Dense<any>
     local segment_cache = table.create(256) :: Cache
     local hooks_cache = table.create(256) :: HookSignals
@@ -281,10 +356,15 @@ export function world(count: number?): World
     local group_cache = {} :: GroupCache
     local sparse = {} :: Sparse
 
-    entitiesInit(entities)
-    metaInit(dense)
+    _allocateEntities(entities)
+    _metaInit(dense, chunksCount)
+
+    _worldComponentCache = BCREATE(256) :: buffer
+    _worldEntityCache = TCREATE(entitySize * 0.1) :: { number? }
+    _worldSegmentTableCache = TCREATE(30) :: { {} }
 
     _WORLD_ARRAY = { entities, sparse, dense, segment_cache, group_cache, relation_graph_cache, target_graph_cache, query_cache, hooks_cache }
+    _WORLD_NULL = false
 
     return _WORLD_ARRAY
 end
@@ -294,12 +374,19 @@ export function etype(): IndexId
     return 0
 end
 
-export function entity <T> (etypeId: number): Entity<number>
-    const entities = _WORLD_ARRAY[ENTITIES]
-    const segments = _WORLD_ARRAY[SEGMENT_CACHE]
+export function entity <T> (etype: number): Entity<number>
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
+    const segments = _WORLD_ARRAY[SEGMENT_CACHE] :: Cache
+    const dense = _WORLD_ARRAY[DENSE] :: Dense<unknown>
 
     local id = _worldEntityCacheHead == 0 and 
-        ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
+        ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead] :: number
+
+    local typeSegments = segments[etype] :: buffer
+    local typeId = entities[etype] :: u32
+
+    local cacheHead = EXTRACT32(typeId, BIT_NUMBER_U16)
+    local id_segment = READU16(typeSegments, cacheHead)
 
    return id :: __ecs_create_entity<T>
 end
@@ -314,13 +401,13 @@ export function component <T> (): Entity<T>
 
     if id > ID_COMPONENT_MAX then ecs_error(ERROR_OVERFLOW_MESSAGE) end
 
-    local struct = chunkInit({}, INDEX_CHUNK_VALUE)
+    local struct = _allocateChunk({}, INDEX_CHUNK_VALUE)
 
     local denseIndex = #dense + 1
     sparse[id] = denseIndex
     
     local denseStruct = {}
-    chunkInit(denseStruct, INDEX_CHUNK_VALUE)
+    _allocateChunk(denseStruct, INDEX_CHUNK_VALUE)
     dense[denseIndex] = denseStruct
 
     entities[id] = BOR(ECS_MASK_ACTIVE, BLSHIFT(1, BIT_NUMBER_U4))
@@ -334,15 +421,15 @@ export function multi <T> (count: number?): Entity<T>
     const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
     const dense = _WORLD_ARRAY[DENSE] :: Dense<T>
 
-    local struct = chunkInit({}, INDEX_CHUNK_VALUE + (count or 0))
+    local struct = _allocateChunk({}, INDEX_CHUNK_VALUE + (count or 0))
     local id = _worldEntityCacheHead == 0 and 
-        ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
+        ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead] :: number
     
     local denseIndex = #dense + 1
     sparse[id] = denseIndex
     
     local denseStruct = {}
-    chunkInit(denseStruct, INDEX_CHUNK_VALUE + (count or 0))
+    _allocateChunk(denseStruct, INDEX_CHUNK_VALUE + (count or 0))
     dense[denseIndex] = denseStruct
 
     entities[id] = BOR(ECS_MASK_ACTIVE, BLSHIFT(count or 0, BIT_NUMBER_U4))
@@ -357,13 +444,13 @@ export function tag <T> (): Entity<T>
     const dense = _WORLD_ARRAY[DENSE] :: Dense<T>
 
     local id = _worldEntityCacheHead == 0 and 
-        ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
+        ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead] :: number
 
     local denseIndex = #dense + 1
     sparse[id] = denseIndex
     
     local denseStruct = {}
-    chunkInit(denseStruct, INDEX_CHUNK_VALUE)
+    _allocateChunk(denseStruct, INDEX_CHUNK_VALUE)
     dense[denseIndex] = denseStruct
 
     entities[id] = ECS_MASK_ACTIVE
@@ -391,7 +478,10 @@ export function add <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<E
 
     local sg_techbuffer_struct = ch_struct[INDEX_CHUNK_BITMAP] :: SegmentBuffer
     local tech_buffer = sg_techbuffer_struct[segmentNumber] :: buffer?
-    if not tech_buffer then end
+
+    if not tech_buffer then 
+        tech_buffer = _allocateSegment(ch_struct, segmentNumber, #ch_struct) 
+    end
 
     local blockIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U4)
     local bitmapIndex = EXTRACT64(entityId, BIT_INTEGER_U24, BIT_INTEGER_U4)
@@ -562,9 +652,11 @@ end
 
 export function group <T, U> (relation: Entity<T>, target: Entity<U>): Group<Entity<T>, Entity<U>>
     local groups = _WORLD_ARRAY[GROUP_CACHE] :: GroupCache
-    const entities = _WORLD_ARRAY[ENTITIES]
-    const sparse = _WORLD_ARRAY[SPARSE]
-    const dense = _WORLD_ARRAY[DENSE]
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
+    const relation_cache = _WORLD_ARRAY[RELATION_GRAPH_CACHE] :: Cache
+    const target_cache = _WORLD_ARRAY[TARGET_GRAPH_CACHE] :: Cache
+    const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
+    const dense = _WORLD_ARRAY[DENSE] :: Dense<T>
     
     local irelation: u64 = ICREATE(relation :: __ecs_is_entity<typeof(relation)>)
     local itarget: u64 = ICREATE(target :: __ecs_is_entity<typeof(target)>)
@@ -572,10 +664,10 @@ export function group <T, U> (relation: Entity<T>, target: Entity<U>): Group<Ent
     local uint_48: u52 = OR(irelation, itarget) -- 0bu52
 
     local id = groups[uint_48]
-    if id then return id :: Group<typeof(relation), typeof(target)> end
+    if id then return id :: Group<Entity<T>, Entity<U>> end
 
     id = _worldEntityCacheHead == 0 and 
-        ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
+        ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead] :: number
     
     groups[uint_48] = id
     entities[id] = uint_48
@@ -585,7 +677,7 @@ export function group <T, U> (relation: Entity<T>, target: Entity<U>): Group<Ent
     sparse[id] = denseIndex
     
     local denseStruct = {}
-    chunkInit(denseStruct, INDEX_CHUNK_VALUE)
+    _allocateChunk(denseStruct, INDEX_CHUNK_VALUE)
     dense[denseIndex] = denseStruct
 
     return id :: Group<Entity<T>, Entity<U>>
@@ -595,11 +687,11 @@ const function disable(entity: Entity<number>): ()
     
 end
 
-const function fast_group <T, U> (relation: Entity<T>, target: Entity<U>): Group<Entity<T>, Entity<U>>
+const function fastGroup <T, U> (relation: Entity<T>, target: Entity<U>): Group<Entity<T>, Entity<U>>
     local groups = _WORLD_ARRAY[GROUP_CACHE] :: GroupCache
-    const entities = _WORLD_ARRAY[ENTITIES]
-    const sparse = _WORLD_ARRAY[SPARSE]
-    const dense = _WORLD_ARRAY[DENSE]
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
+    const relation_cache = _WORLD_ARRAY[RELATION_GRAPH_CACHE] :: Cache
+    const target_cache = _WORLD_ARRAY[TARGET_GRAPH_CACHE] :: Cache
     
     local irelation: u64 = ICREATE(relation :: __ecs_is_entity<typeof(relation)>)
     local itarget: u64 = ICREATE(target :: __ecs_is_entity<typeof(target)>)
@@ -607,13 +699,10 @@ const function fast_group <T, U> (relation: Entity<T>, target: Entity<U>): Group
     local uint_48: u52 = OR(irelation, itarget) -- 0bu52
 
     local id = groups[uint_48]
-    if id then return id :: Group<typeof(relation), typeof(target)> end
+    if id then return id :: Group<Entity<T>, Entity<U>> end
     
     id = _worldEntityCacheHead == 0 and 
-         ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
-
-    id = _worldEntityCacheHead == 0 and 
-        ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead]
+         ID_COMPONENT_MAX + (_worldEntity + 1) or _worldEntityCache[_worldEntityCacheHead] :: number
     
     groups[uint_48] = id
     entities[id] = uint_48
@@ -638,18 +727,22 @@ const function second <T, U> (group: Group<Entity<T>, Entity<U>>): Entity<any>
     return 0 :: __ecs_create_entity<U>
 end
 
-export const Relations = {
-    fast_group = fast_group,
+export const ImportRelations = {
+    fastGroup = fastGroup,
     target = target,
     relation = relation,
     first = first,
     second = second
 }
 
-export const Query = {
+export const ImportQuery = {
 
 }
 
-export const Profiler = {
+export const ImportEntity = {
+    
+}
+
+export const ImportProfiler = {
 
 }
