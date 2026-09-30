@@ -49,7 +49,7 @@ Entity - [0..20] - chunk and segment + [20..21] - block + [21..31] - bitmap + [5
 
 Group - [0..3] - hooks + [4..27] - relation + [28..51] - target => 52 bits (integer)
 
-Multi - [0..3] - hooks + [4..7] - table count => 8 bits (number?)
+Multi - [4..7] - table count => 8 bits (number?)
 
 Component - [0..3] - life => 12 bits (number?)
 
