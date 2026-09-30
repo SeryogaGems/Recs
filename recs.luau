@@ -533,7 +533,6 @@ export function group <T, U> (relation: Entity<T>, target: Entity<U>): Group<Ent
     sparse[id] = denseIndex
     
     local denseStruct = {}
-    _allocateChunk(denseStruct, INDEX_CHUNK_VALUE)
     dense[denseIndex] = denseStruct
 
     return id :: Group<Entity<T>, Entity<U>>
