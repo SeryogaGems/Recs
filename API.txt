@@ -1,66 +1,59 @@
 //COMPONENTS//
 
 basic-component = {
-    {} - chunk 1..0xFFFF
-    {
-        [1] = 0xFFFFi - chunk mask (fill / nil)
-        [2] = { buffer.create([0x4, 0x64]) - block and block fields 1..4 (5 uint_64) }
-        [3] = { buffer.create([id]) - block and block fields 1..256 (256 uint_32) }
-        [4] = { table.create([value]) - entity values 1..256 (256 x element_size) }
-    } => ~83,000 (4096)
-}
+    [1] = buffer.create(64+, 0x64) - quad-chunk-bitmap (uint_64)
+    [2] = 0 | { function, function, function },
+    [3] = { N-chunk [dense]: buffer.create([0x16], 0x40) - x16 [block 0 and block fields 1..4] (80 uint_64) },
+    [4] = { N-chunk x 16 [optional dense]: buffer.create([id], 0x256) - [entity fields 0..255] (256 uint_32) },
+    [5] = { N-chunk x 16 [optional dense]: table.create([256]) - [value fields 1..256] (256 TValue) }
+} => 84.784 (4096) / ~82Kb or 1952 bytes when empty
 
 multi-component = {
-    {} - chunk 1..0xFFFF
-    {
-        [1] = 0xFFFFi - chunk mask (fill / nil)
-        [2] = { buffer.create([0x4, 0x64]) - block and block fields 1..4 (5 uint_64) }
-        [3] = { buffer.create([id]) - block and block fields 1..256 (256 uint_32) }
-        [4] = { table.create([value]) - entity values 1..256 (256 x element_size) }
-        [5..7] = { table.create([value]) - entity values 1..256 (256 x element_size) }
-    } => ~280,000 (4096)
-}
+    [1] = buffer.create(64+, 0x64) - quad-chunk-bitmap (uint_64)
+    [2] = 0 | { function, function, function },
+    [3] = { N-chunk [dense]: buffer.create([0x16], 0x40) - x16 [block 0 and block fields 1..4] (80 uint_64) },
+    [4] = { N-chunk x 16 [optional dense]: buffer.create([id], 0x256) - [entity fields 0..255] (256 uint_32) },
+    [5] = { N-chunk x 16 [optional dense]: table.create([256]) - [value fields 1..256] (256 TValue) }
+    [6?] = { N-chunk x 16 [optional dense]: table.create([256]) - [value fields 1..256] (256 TValue) },
+    [7?] = { N-chunk x 16 [optional dense]: table.create([256]) - [value fields 1..256] (256 TValue) },
+    [8?] = { N-chunk x 16 [optional dense]: table.create([256]) - [value fields 1..256] (256 TValue) },
+    [9?] = { N-chunk x 16 [optional dense]: table.create([256]) - [value fields 1..256] (256 TValue) }
+} => 351.000 (4096) / ~351Kb or 3232 bytes when empty
 
 tag = {
-    {} - chunk 1..0xFFFF
-    {
-        [1] = 0xFFFFi - chunk mask (fill / nil)
-        [2] = { buffer.create([0x4, 0x64]) - block and block fields 1..4 (5 uint_64) }
-        [3] = { buffer.create([id]) - block and block fields 1..256 (256 uint_32) }
-    } => ~1200 (4096)
-}
+    [1] = buffer.create(64+, 0x64) - quad-chunk-bitmap (uint_64)
+    [2] = 0 | { function, function, function },
+    [3] = { N-chunk [dense]: buffer.create([0x16], 0x40) - x16 [block 0 and block fields 1..4] (80 uint_64) },
+    [4] = { N-chunk x 16 [optional dense]: buffer.create([id], 0x256) - [entity fields 0..255] (256 uint_32) },
+} => 18.160 (4096) / ~19Kb or 1632 bytes when empty
 
 group = {
-    {} - chunk 1..0xFFFF
-    {
-        [1] = 0xFFFFi - chunk mask (fill / nil)
-        [2] = { buffer.create([0x4, 0x64]) - block and block fields 1..4 (5 uint_64) }
-        [3] = { buffer.create([id]) - block and block fields 1..256 (256 uint_32) }
-        [4] = { table.create([value]) - entity values 1..256 (256 x element_size) }
-    } => ~83,000 (4096)
-}
+    [1] = buffer.create(64+, 0x64) - quad-chunk-bitmap (uint_64)
+    [2] = 0 | { function, function, function },
+    [3] = { N-chunk [dense]: buffer.create([0x16], 0x40) - x16 [block 0 and block fields 1..4] (80 uint_64) },
+    [4] = { N-chunk x 16 [optional dense]: buffer.create([id], 0x256) - [entity fields 0..255] (256 uint_32) },
+    [5] = { N-chunk x 16 [optional dense]: table.create([256]) - [value fields 1..256] (256 TValue) }
+} => 84.784 (4096) / ~82Kb or 1952 bytes when empty
+
 
 meta = {
-    {} - chunk 1..0xFFFF
-    {
-        [1] = 0xFFFFi - chunk mask (fill [types] / full [types])
-        [2] = { buffer.create([0x4, 0x64]) - block and block fields 1..4 (5 uint_64) }
-    } => ~800 (4096)
-}
+    [1] = buffer.create(64+, 0x64) - quad-chunk-bitmap (uint_64)
+    [2] = { N-chunk [dense]: buffer.create([0x16], 0x40) - x16 [block 0 and block fields 1..4] (80 uint_64) },
+} => 1328 bytes (4096) / ~1Kb always
 
 //MASK STANDARDS//
 
 Etype - [0..15] - segment_cache => 16 bits (number)
 
-Entity - [0..15] - chunk + [16..19] - segment + [20..23] - block + [24..31] - bitmap + [56..63] - cluster => 64 bits (integer)
+Entity - [0..20] - chunk and segment + [20..21] - block + [21..31] - bitmap + [56..63] - cluster => 64 bits (integer)
 
 Group - [0..3] - hooks + [4..27] - relation + [28..51] - target => 52 bits (integer)
 
 Multi - [0..3] - hooks + [4..7] - table count => 8 bits (number?)
 
-Component - [0..3] - hooks + [4..11] - any bits => 12 bits (number?)
+Component - [0..3] - life => 12 bits (number?)
 
-Tag - [0..3] - hooks => 4 bits (number?)
+Tag - [0..3] - life => 4 bits (number?)
 
 //CACHE//
 
@@ -202,7 +195,7 @@ target(world: World, source: Entity, relationship: Entity<>, index: number?): En
         2. Начать перебирать буфер. Каждый ID проверить через связку: sparse -> dense.
         3. Если найдено совпадение - окончить цикл. Или продолжить при отличном index.
         4. Посмотреть маску ID в сущностях
-        5. Вернуть 2 часть группы.
+        5. Вернуть 2 часть группы.ы
     ]
 
 has(world: World, entity: Entity, link: Tag | Group): boolean - проверить есть ли у сущности этот тег или группа. =>
@@ -213,7 +206,8 @@ has(world: World, entity: Entity, link: Tag | Group): boolean - проверит
         4. Вернуть true, если место сущности найдено. False при любом несоответствии.
     ]
 
-query(world: World, ...Component | Group): Query - собрать запрос по компонентам или группе.
+query(world: World, ...Component | Group): Query - собрать запрос по компонентам или группе. 
+Запрос собирается по квадрантам (4 чанка сразу за 1 чтение флага)
 
 forEach(query: Query): () -> () - итерация запроса. Вернёт связку entity x v1...
 
@@ -225,14 +219,14 @@ without(world: World, query: Query, ...Component | Tag | MultiComponent | Group)
 
 iter(world: World, query: Query, ...Component | Tag | MultiComponent | Group): () -> () - итерация запроса. Вернёт только сущности.
 
-all(world: World, pattern: RecsSpecial | EType): () -> () - вернуть сложные объекты специального типа: компонент объекты (Recs.Component),
+-- ? all(world: World, pattern: RecsSpecial | EType): () -> () - вернуть сложные объекты специального типа: компонент объекты (Recs.Component),
 типы (Recs.Type), все entity (Recs.All)
 
 cacheQuery(world: World, query: Query): Id<Query> - закэшировать запрос для переиспользования без сборки. Кладётся в cache-часть мира.
 
-last(world: World, multi: MultiComponent): any - получить последний массив данных у мульти-компонента
+-- ? last(world: World, multi: MultiComponent): any - получить последний массив данных у мульти-компонента
 
-first(world: World, multi: MultiComponent): any - получить первый массив данных у мульти-компонента
+-- ? first(world: World, multi: MultiComponent): any - получить первый массив данных у мульти-компонента
 
 find(world: World, key: string): Id? - найти Id-объекта по заданному ключу во внутреннее хранилище.
 
