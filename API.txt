@@ -59,10 +59,7 @@ Tag - [0..3] - life => 4 bits (number?)
 
 Segments = {
     [type_id] = buffer.create([n, ...segment])
-} =>
-    extract(type_mask, 0x8, 0x8)
-    buffer.readu32()
-    -- +-0xFF
+}
 
 Query = {
     [number_id] = {}
