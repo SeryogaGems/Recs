@@ -13,7 +13,7 @@ type IndexId = number
 -- Type(u16) / Multi-Component(u8) [number]
 -- Component(u12) / Tag(u4) [number] ]|
 type u64 = integer
-type u52 = integer
+type u48 = integer
 type u32 = number
 
 -- Type functions |[]|
@@ -62,10 +62,10 @@ type Struct <U> = { buffer | ChunkHooks <U> | ChunkBuffer | ChunkValue<U>? }
 
 -- Types for special caches
 type QueryCache = {[IndexId]: {}}
-type GroupCache = {[u52]: IndexId}
+type GroupCache = {[u48]: IndexId}
 
 -- Basic types of world tables ]|
-type Entities = { [IndexId]: u64 | u52 | u32 }
+type Entities = { [IndexId]: u64 | u48 | u32 }
 type Sparse = { [IndexId]: u32 }
 type Dense <U> = { [u32]: Struct <U> }
 type Cache = { [IndexId]: buffer? }
@@ -108,6 +108,7 @@ local READU32 = buffer.readu32
 local WRITEINTEGER = buffer.writeinteger
 local READINTEGER = buffer.readinteger
 local LEN = buffer.len
+local FILL = buffer.fill
 
 -- MATH std::library methods localization 
 local MIN = math.min
@@ -120,8 +121,7 @@ local CLEAR = table.clear
 -- Fields and width of bitwise take operations |[
 -- Fields maskes
 const BIT_INTEGER_ZERO = 0x0i
-const BIT_INTEGER_U4 = 0x4i
-const BIT_INTEGER_U8 = 0x8i
+const BIT_INTEGER_U12 = 0x12i
 const BIT_INTEGER_U16 = 0x10i
 const BIT_INTEGER_U20 = 0x14i
 const BIT_INTEGER_U24 = 0x18i
@@ -130,6 +130,8 @@ const BIT_NUMBER_ZERO = 0x0
 const BIT_NUMBER_U4 = 0x4
 const BIT_NUMBER_U8 = 0x8
 const BIT_NUMBER_U16 = 0x10
+const BIT_NUMBER_U40 = 0x28
+const BIT_NUMBER_U64 = 0x40
 
 -- Maximum size limits in numbers |[
 -- Filling of component structures
@@ -221,7 +223,7 @@ local _cacheIdComponents: buffer
 -- Entity and component cache size (var)
 local _headIdEntities = 0
 local _headIdComponents = 0
-local _headEmptySegments = 0
+local _headEmptyStructs = 0
 local _headEmptyChunks = 0
 
 -- Packed objects
@@ -235,26 +237,88 @@ const function ecs_error(errorMessage: string): never
     error(`[RECS]: {errorMessage}`)
 end
 
-const function _segmentAllocation <U> (cmp_struct: Struct<U>, position: number, size: number): ()
-    local buffer_entity_struct = cmp_struct[INDEX_CHUNK_ENTITY] :: ChunkBuffer
-    buffer_entity_struct[position] = BCREATE(BYTE_U32 * ELEMENTS_STRUCT_CHUNK_SOA)
+const function _segmentAllocation <U> (cmp_struct: Struct <U>, struct_size: number, position: number): buffer
+    local entity_struct = cmp_struct[INDEX_CHUNK_ENTITY] :: ChunkBuffer
 
-    if size == INDEX_CHUNK_ENTITY then return end
+    local newBuffer = BCREATE(ELEMENTS_STRUCT_SEGMENT * BYTE_U64)
+    entity_struct[position] = newBuffer
 
-    local table_value_struct = cmp_struct[INDEX_CHUNK_VALUE] :: ChunkValue <U>
-    table_value_struct[position] = TCREATE(ELEMENTS_STRUCT_CHUNK_SOA)
+    if struct_size == INDEX_CHUNK_ENTITY then return newBuffer end
+
+    local value_struct = cmp_struct[INDEX_CHUNK_VALUE] :: ChunkValue <U>
+    value_struct[position] = TCREATE(ELEMENTS_STRUCT_SEGMENT)
+
+    if struct_size == INDEX_CHUNK_VALUE then return newBuffer end
 end
 
-const function _chunkAllocation <U> (cmp_struct: Struct<U>, size: number, chunkSize: number): ()
+const function _chunkInsertion <U> (cmp_struct: Struct <U>, struct_size: number, size: number, count: number?): buffer
+    local chunks = count or _structChunkHead
 
+    local tech_struct = cmp_struct[INDEX_COMPONENT_TECH] :: ChunkBuffer
+
+    local difference = chunks - size
+    local lastbuffer: buffer
+    for i=1, difference do 
+        lastbuffer = BCREATE(640) 
+        tech_struct[size + i] = lastbuffer
+    end
+
+    if struct_size == INDEX_COMPONENT_TECH then return lastbuffer end
+
+    local optional_dense_size = ELEMENTS_STRUCT_CHUNK_SOA * size
+    local optional_dense_indexes = ELEMENTS_STRUCT_CHUNK_SOA * chunks
+
+    local old_entity_struct = cmp_struct[INDEX_CHUNK_ENTITY] :: ChunkBuffer
+    local new_entity_struct = TCREATE(optional_dense_indexes) :: ChunkBuffer
+
+    MOVE(old_entity_struct, 1, optional_dense_size, 1, new_entity_struct)
+    CLEAR(old_entity_struct)
+
+    if struct_size == INDEX_CHUNK_ENTITY then 
+        _headEmptyStructs += 1 
+        _cacheStructComponents[_headEmptyStructs] = { 0, 0, 0, old_entity_struct } :: Struct <U>
+        return lastbuffer 
+    end
+
+    local old_value_struct = cmp_struct[INDEX_CHUNK_VALUE] :: ChunkValue<U>
+    local new_value_struct = TCREATE(optional_dense_indexes) :: ChunkValue<U>
+
+    MOVE(old_value_struct, 1, optional_dense_size, 1, new_value_struct)
+    CLEAR(old_value_struct)
+
+    _headEmptyStructs += 1 
+    _cacheStructComponents[_headEmptyStructs] = { 0, 0, 0, old_entity_struct, old_value_struct } :: Struct <U>
+
+    return lastbuffer
 end
 
-const function _entitiesAllocation(): ()
-    
+const function _componentAllocation <U> (structSize: number, from: number?, to: number?): Struct <U>
+    local start = from or 0
+    local offset = to or _structChunkHead
+
+    local tech_struct = TCREATE(offset) :: ChunkBuffer
+    for i=1, offset do tech_struct[i] = BCREATE(640) end
+
+    if structSize == INDEX_COMPONENT_TECH then return { BCREATE(64 * BYTE_U64), 0, tech_struct } end
+
+    local optional_dense_indexes = ELEMENTS_STRUCT_CHUNK_SOA * offset
+
+    local entity_struct = TCREATE(optional_dense_indexes) :: ChunkBuffer
+    if structSize == INDEX_CHUNK_ENTITY then return { BCREATE(64 * BYTE_U64), 0, tech_struct, entity_struct } end
+
+    local value_struct = TCREATE(optional_dense_indexes) :: ChunkValue <U>
+    if structSize == INDEX_CHUNK_VALUE then return { BCREATE(64 * BYTE_U64), 0, tech_struct, entity_struct, value_struct } end
+
+    return 5 :: any
 end
 
-const function _metaAllocation(): ()
-    
+const function _entitiesAllocation(entities: Entities): ()
+    for i=1, ID_SPECIAL_MAX do entities[i] = i end
+end
+
+const function _metaAllocation(dense: Dense <unknown>, chunkCount: number): ()
+    _structChunkHead = chunkCount
+    dense[1] = _componentAllocation(INDEX_COMPONENT_TECH)
 end
 
 -- Creates a single, shared world instance with entity fields, components (sparse and dense), 
@@ -268,7 +332,7 @@ export function world(count: number?): World
     local chunksCount = entitySize // ELEMENTS_STRUCT_CHUNK_ENTITY
 
     local entities = TCREATE(entitySize) :: Entities
-    local dense = TCREATE(256) :: Dense<any>
+    local dense = TCREATE(256) :: Dense <unknown>
     local segment_cache = TCREATE(256) :: Cache
 
     local query_cache = {} :: QueryCache
@@ -277,13 +341,10 @@ export function world(count: number?): World
     local group_cache = {} :: GroupCache
     local sparse = {} :: Sparse
 
+    _cacheStructComponents = {}
+
     _entitiesAllocation(entities)
     _metaAllocation(dense, chunksCount)
-
-    _cacheIdComponents = BCREATE(256) :: buffer
-    _cacheIdEntities = TCREATE(entitySize * 0.1) :: { number? }
-    _cacheTableSegments = TCREATE(30) :: { {}? }
-    _cacheStructChunk = TCREATE(30) :: { Chunk<unknown>? }
 
     _WORLD_NULL = false
     _WORLD_ARRAY = table.freeze({ 
@@ -306,7 +367,7 @@ export function entity <T> (etype: number, cluster: number?): Entity<number>
     const dense = _WORLD_ARRAY[DENSE] :: Dense<unknown>
 
     local cachePush = _headIdEntities == BIT_NUMBER_ZERO
-    local id = cachePush and 1 + ID_COMPONENT_MAX + _worldEntity or _cacheIdEntities[_headIdEntities] :: number
+    local id = if cachePush then _cacheIdEntities[_headIdEntities] else _worldEntity + 1
     _headIdEntities = cachePush and 0 or _headIdEntities - 1
 
     local typeSegments = segments[etype] :: buffer
@@ -336,21 +397,6 @@ export function component <T> (): Entity<T>
     const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
     const dense = _WORLD_ARRAY[DENSE] :: Dense<T>
 
-    local cachePush = _headIdComponents == BIT_NUMBER_ZERO
-    local id = cachePush and 1 + ID_TYPE_MAX + _componentIdHead or READU8(_cacheIdComponents, _headIdComponents - 1)
-    _headIdComponents = cachePush and 0 or _headIdComponents - 1
-
-    if id > ID_COMPONENT_MAX then ecs_error(ERROR_OVERFLOW_MESSAGE) end
-
-    _worldDense += 1
-    sparse[id] = _worldDense
-    
-    local denseStruct = {}
-    _chunkAllocation(denseStruct, INDEX_CHUNK_VALUE)
-    dense[_worldDense] = denseStruct
-
-    entities[id] = OR(1i)
-
     return id :: __ecs_create_entity<T>
 end
 
@@ -358,20 +404,6 @@ export function multi <T> (count: number?): Entity<T>
     const entities = _WORLD_ARRAY[ENTITIES] :: Entities
     const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
     const dense = _WORLD_ARRAY[DENSE] :: Dense<T>
-
-    local cachePush = _headIdEntities == BIT_NUMBER_ZERO
-    local id = cachePush and 1 + ID_COMPONENT_MAX + _worldEntity or _cacheIdEntities[_headIdEntities] :: number
-    _headIdEntities = cachePush and 0 or _headIdEntities - 1
-    
-    _worldDense += 1
-    sparse[id] = _worldDense
-    
-    local denseStruct = {}
-    _chunkAllocation(denseStruct, INDEX_CHUNK_VALUE + (count or 0))
-    dense[_worldDense] = denseStruct
-
-    entities[id] = ICREATE(count or 0)
-    _worldEntity += 1
 
     return id :: __ecs_create_entity<T>
 end
@@ -381,33 +413,71 @@ export function tag <T> (): Entity<T>
     const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
     const dense = _WORLD_ARRAY[DENSE] :: Dense<T>
 
-    local cachePush = _headIdEntities == BIT_NUMBER_ZERO
-    local id = cachePush and 1 + ID_COMPONENT_MAX + _worldEntity or _cacheIdEntities[_headIdEntities] :: number
-    _headIdEntities = cachePush and 0 or _headIdEntities - 1
-
-    _worldDense += 1
-    sparse[id] = _worldDense
-    
-    local denseStruct = {}
-    _chunkAllocation(denseStruct, INDEX_CHUNK_ENTITY)
-    dense[_worldDense] = denseStruct
-
-    entities[id] = OR(1i)
-    _worldEntity += 1
-
     return id :: __ecs_create_entity<T>
+end
+
+export function group <T, U> (relation: Entity<T>, target: Entity<U>): Group<Entity<T>, Entity<U>>
+    local groups = _WORLD_ARRAY[GROUP_CACHE] :: GroupCache
+    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
+    
+    local irelation: u64 = ICREATE(relation :: __ecs_is_entity<typeof(relation)>)
+    local itarget: u64 = ICREATE(target :: __ecs_is_entity<typeof(target)>)
+
+    local uint_48: u48 = OR(irelation, itarget) -- 0bu48
+
+    return id :: Group<Entity<T>, Entity<U>>
 end
 
 export function add <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>): ()
     const entities = _WORLD_ARRAY[ENTITIES] :: Entities
     const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
-    const dense = _WORLD_ARRAY[DENSE] :: Dense<U>
+    const dense = _WORLD_ARRAY[DENSE] :: Dense <U>
 
     local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64
     local componentId = sparse[component :: __ecs_is_entity<typeof(component)>] :: u32
 
-    local cmp_struct = dense[componentId] :: Struct<U>
+    local cmp_struct = dense[componentId] :: Struct <U>
 
+    local tech_struct = cmp_struct[INDEX_COMPONENT_TECH] :: ChunkBuffer
+
+    local complexPosition = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U20)
+    local positionNumber = TONUMBER(complexPosition) -- from 0
+
+    local chunk = positionNumber // BIT_NUMBER_U16
+    local segment = positionNumber - (chunk * BIT_NUMBER_U16)
+
+    local techbuffer = tech_struct[chunk + 1] :: buffer?
+    if not techbuffer then return end
+
+    local entity_struct = cmp_struct[INDEX_CHUNK_ENTITY] :: ChunkBuffer
+
+    local complexIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U12)
+    local indexNumber = TONUMBER(complexIndex) -- from 0
+
+    local block = indexNumber // BIT_NUMBER_U64
+    local bitmap = indexNumber - (block * BIT_NUMBER_U64)
+
+    local entitybuffer = entity_struct[positionNumber + 1] :: buffer?
+    if not entitybuffer then return end
+
+    local offset = segment * BIT_NUMBER_U40 + (block + 1) * BIT_NUMBER_U8
+    local mask = READINTEGER(techbuffer, offset)
+
+    if mask == BIT_INTEGER_ZERO then
+        local segmentOffset = segment * BIT_NUMBER_U40
+        local segmentMask = READINTEGER(techbuffer, segmentOffset)
+
+        local intBlock = ICREATE(block)
+        segmentMask = XOR(segmentMask, LSHIFT(1i, intBlock))
+
+        WRITEINTEGER(techbuffer, segmentOffset, segmentMask)
+    end
+
+    local intBitmap = ICREATE(bitmap)
+    mask = XOR(mask, LSHIFT(1i, intBitmap))
+
+    WRITEINTEGER(techbuffer, offset, mask)
+    WRITEU32(entitybuffer, indexNumber, entity :: __ecs_create_entity<typeof(entity)>)
 
     -- query cache invalid
 end
@@ -415,12 +485,66 @@ end
 export function remove <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>): ()
     const entities = _WORLD_ARRAY[ENTITIES] :: Entities
     const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
-    const dense = _WORLD_ARRAY[DENSE] :: Dense<U>
+    const dense = _WORLD_ARRAY[DENSE] :: Dense <U>
 
     local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64
     local componentId = sparse[component :: __ecs_is_entity<typeof(component)>] :: u32
 
-    local cmp_struct = dense[componentId] :: Struct<U>
+    local cmp_struct = dense[componentId] :: Struct <U>
+
+    local tech_struct = cmp_struct[INDEX_COMPONENT_TECH] :: ChunkBuffer
+
+    local complexPosition = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U20)
+    local positionNumber = TONUMBER(complexPosition) -- from 0
+
+    local chunk = positionNumber // BIT_NUMBER_U16
+    local segment = positionNumber - (chunk * BIT_NUMBER_U16)
+
+    local techbuffer = tech_struct[chunk + 1] :: buffer
+
+    local entity_struct = cmp_struct[INDEX_CHUNK_ENTITY] :: ChunkBuffer
+
+    local complexIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U12)
+    local indexNumber = TONUMBER(complexIndex) -- from 0
+
+    local block = indexNumber // BIT_NUMBER_U64
+    local bitmap = indexNumber - (block * BIT_NUMBER_U64)
+
+    local entitybuffer = entity_struct[positionNumber + 1] :: buffer
+
+    local offset = segment * BIT_NUMBER_U40 + (block + 1) * BIT_NUMBER_U8
+    local mask = READINTEGER(techbuffer, offset)
+
+    local intBitmap = ICREATE(bitmap)
+    mask = XOR(mask, LSHIFT(1i, intBitmap))
+
+    if mask == BIT_INTEGER_ZERO then
+        local segmentOffset = segment * BIT_NUMBER_U40
+        local segmentMask = READINTEGER(techbuffer, segmentOffset)
+
+        local intBlock = ICREATE(block)
+        segmentMask = XOR(segmentMask, LSHIFT(1i, intBlock))
+
+        if segmentMask == BIT_INTEGER_ZERO then
+            local quadmaskbuffer = cmp_struct[INDEX_COMPONENT_BITMAP] :: buffer
+
+            local quadBuffer = cmp_struct[1] :: buffer
+            local quadOffset = (chunk // BIT_NUMBER_U4) * BIT_NUMBER_U8
+            local bitInQuad = (chunk % BIT_NUMBER_U4) * BIT_NUMBER_U16 + segment
+
+            local quadMask = READINTEGER(quadBuffer, quadOffset)
+
+            local intQuad = ICREATE(bitInQuad)
+            quadMask = OR(quadMask, LSHIFT(1i, intQuad))
+
+            WRITEINTEGER(quadBuffer, quadOffset, quadMask)
+        end
+
+        WRITEINTEGER(techbuffer, segmentOffset, segmentMask)
+    end
+
+    WRITEINTEGER(techbuffer, offset, mask)
+    WRITEU32(entitybuffer, indexNumber, 0)
 
     -- query cache invalid
 end
@@ -433,8 +557,15 @@ export function get <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<E
     local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64
     local componentId = sparse[component :: __ecs_is_entity<typeof(component)>] :: u32
 
-    local cmp_struct = dense[componentId] :: Struct<U>
+    local cmp_struct = dense[componentId] :: Struct <U>
 
+    local complexPosition = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U20)
+    local complexIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U12)
+
+    local sg_struct = cmp_struct[INDEX_CHUNK_VALUE] :: ChunkValue <U>
+    local tbl_value = sg_struct[TONUMBER(complexPosition) + 1] :: { U? }
+
+    return tbl_value[TONUMBER(complexIndex) + 1]
 end
 
 export function set <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>, value: U): ()
@@ -445,26 +576,56 @@ export function set <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<E
     local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64
     local componentId = sparse[component :: __ecs_is_entity<typeof(component)>] :: u32
 
-    local cmp_struct = dense[componentId] :: Struct<U>
+    local cmp_struct = dense[componentId] :: Struct <U>
 
+    local complexPosition = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U20)
+    local complexIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U12)
+
+    local sg_struct = cmp_struct[INDEX_CHUNK_VALUE] :: ChunkValue <U>
+    local tbl_value = sg_struct[TONUMBER(complexPosition) + 1] :: { U? }
+
+    tbl_value[TONUMBER(complexIndex) + 1] = value
+
+    -- query cache invalid
 end
 
 export function has <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>): boolean
     const entities = _WORLD_ARRAY[ENTITIES] :: Entities
     const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
-    const dense = _WORLD_ARRAY[DENSE] :: Dense<U>
+    const dense = _WORLD_ARRAY[DENSE] :: Dense <U>
 
     local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64
     local componentId = sparse[component :: __ecs_is_entity<typeof(component)>] :: u32
 
-    local cmp_struct = dense[componentId] :: Struct<U>
+    local cmp_struct = dense[componentId] :: Struct <U>
 
+    local tech_struct = cmp_struct[INDEX_COMPONENT_TECH] :: ChunkBuffer
+
+    local complexPosition = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U20)
+    local positionNumber = TONUMBER(complexPosition) -- from 0
+
+    local chunk = positionNumber // BIT_NUMBER_U16
+    local segment = positionNumber - (chunk * BIT_NUMBER_U16)
+
+    local techbuffer = tech_struct[chunk + 1] :: buffer
+
+    local complexIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U12)
+    local indexNumber = TONUMBER(complexIndex) -- from 0
+
+    local block = indexNumber // BIT_NUMBER_U64
+    local bitmap = indexNumber - (block * BIT_NUMBER_U64)
+
+    local offset = segment * BIT_NUMBER_U40 + (block + 1) * BIT_NUMBER_U8
+    local mask = READINTEGER(techbuffer, offset)
+
+    local intBitmap = ICREATE(bitmap)
+    return EXTRACT64(mask, intBitmap) ~= BIT_INTEGER_ZERO
 end
 
 export function exist <T, U> (entity: Entity<T> | Group<Entity<T>, Entity<U>>): boolean
     const entities = _WORLD_ARRAY[ENTITIES] :: Entities
     
-    local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64 | u52 | u32
+    local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64 | u48 | u32
     return entityId ~= BIT_NUMBER_ZERO
 end
 
@@ -503,41 +664,6 @@ end
     
 -- end
 
-export function group <T, U> (relation: Entity<T>, target: Entity<U>): Group<Entity<T>, Entity<U>>
-    local groups = _WORLD_ARRAY[GROUP_CACHE] :: GroupCache
-    const entities = _WORLD_ARRAY[ENTITIES] :: Entities
-    
-    local irelation: u64 = ICREATE(relation :: __ecs_is_entity<typeof(relation)>)
-    local itarget: u64 = ICREATE(target :: __ecs_is_entity<typeof(target)>)
-
-    local uint_48: u52 = OR(irelation, itarget) -- 0bu52
-
-    local id = groups[uint_48]
-    if id then return id :: Group<Entity<T>, Entity<U>> end
-
-    id = _headIdEntities == 0 and 
-        ID_COMPONENT_MAX + (_worldEntity + 1) or _cacheIdEntities[_headIdEntities] :: number
-    
-    groups[uint_48] = id
-    entities[id] = uint_48
-    _worldEntity += 1
-
-    const relation_cache = _WORLD_ARRAY[RELATION_GRAPH_CACHE] :: Cache
-    const target_cache = _WORLD_ARRAY[TARGET_GRAPH_CACHE] :: Cache
-
-    const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
-    const dense = _WORLD_ARRAY[DENSE] :: Dense<T>
-
-    local denseIndex = _worldDense + 1
-    _worldDense += 1
-    sparse[id] = denseIndex
-    
-    local denseStruct = {}
-    dense[denseIndex] = denseStruct
-
-    return id :: Group<Entity<T>, Entity<U>>
-end
-
 const function disable(entity: Entity<number>): ()
     
 end
@@ -549,7 +675,7 @@ const function fastGroup <T, U> (relation: Entity<T>, target: Entity<U>): Group<
     local irelation: u64 = ICREATE(relation :: __ecs_is_entity<typeof(relation)>)
     local itarget: u64 = ICREATE(target :: __ecs_is_entity<typeof(target)>)
 
-    local uint_48: u52 = OR(irelation, itarget) -- 0bu52
+    local uint_48: u48 = OR(irelation, itarget) -- 0bu52
 
     local id = groups[uint_48]
     if id then return id :: Group<Entity<T>, Entity<U>> end
