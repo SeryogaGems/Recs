@@ -472,7 +472,13 @@ export function add <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<E
     -- This happens if the meta has chunks ahead of the component
     -- Footnote: When creating the world, it is worth specifying an entity limit to avoid allocations
     local techbuffer = tech_struct[chunk + 1] :: buffer?
-    if not techbuffer then return end
+    local cmpsize: number
+    if not techbuffer then 
+        -- Size of component structure fields
+        -- The allocator accepts the structure itself, the number of fields in the structure, and the maximum chunk number
+        cmpsize = #cmp_struct
+        techbuffer = _chunkInsertion(cmp_struct, cmpsize, #tech_struct)
+    end
 
     -- Reading the entity buffer table
     local entity_struct = cmp_struct[INDEX_CHUNK_ENTITY] :: ChunkBuffer
@@ -490,27 +496,49 @@ export function add <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<E
     local bitmap = indexNumber - (block * BIT_NUMBER_U64)
 
     -- Reading the entity buffer. If nothing is found, a segment is allocated
+    -- The index is equivalent to the position
     -- Note: Segment creation is a lazy process. Allocation occurs immediately upon each new initialization
-    local entitybuffer = entity_struct[positionNumber + 1] :: buffer?
-    if not entitybuffer then return end
+    local index = positionNumber + 1
+    local entitybuffer = entity_struct[index] :: buffer?
+    if not entitybuffer then 
+        -- What is needed is the structure itself, the structure's size (i.e., how many fields it has), and the current position with table padding
+        entitybuffer = _segmentAllocation(cmp_struct, cmpsize or #cmp_struct, index)
+
+        -- Since this is a new segment, its presence needs to be noted in higher-level masks
+        local quadmaskbuffer = cmp_struct[INDEX_COMPONENT_BITMAP] :: buffer
+
+        -- A single quadrant consists of 4 chunks packed into a single 64-bit integer
+        -- Essentially, these are 15-bit sets arranged sequentially, starting from bit position 0
+        local quadBuffer = cmp_struct[1] :: buffer
+        local quadOffset = (chunk // BIT_NUMBER_U4) * BIT_NUMBER_U8
+        local bitInQuad = (chunk % BIT_NUMBER_U4) * BIT_NUMBER_U16 + segment
+
+        local quadMask = READINTEGER(quadBuffer, quadOffset)
+
+        -- Bit flipping
+        local intQuad = ICREATE(bitInQuad)
+        quadMask = OR(quadMask, LSHIFT(1i, intQuad))
+
+        WRITEINTEGER(quadBuffer, quadOffset, quadMask)
+    end
 
     -- Obtaining the offset where the required bitmap is located
     -- The value is multiplied by the total weight of one buffer slice and shifted by 8, since an integer is 8 bytes
     local offset = segment * BIT_NUMBER_U40 + (block + 1) * BIT_NUMBER_U8
-    local mask = READINTEGER(techbuffer, offset)
+    local mask = READINTEGER(techbuffer :: buffer, offset)
 
     -- If the mask consists entirely of zeros, registration takes place at the segment block level
     -- The corresponding bit is flipped to 1
     if mask == BIT_INTEGER_ZERO then
         -- Calculating the required block within the technical buffer
         local segmentOffset = segment * BIT_NUMBER_U40
-        local segmentMask = READINTEGER(techbuffer, segmentOffset)
+        local segmentMask = READINTEGER(techbuffer :: buffer, segmentOffset)
 
         -- Bit flip
         local intBlock = ICREATE(block)
         segmentMask = XOR(segmentMask, LSHIFT(1i, intBlock))
 
-        WRITEINTEGER(techbuffer, segmentOffset, segmentMask)
+        WRITEINTEGER(techbuffer :: buffer, segmentOffset, segmentMask)
     end
 
     -- A bit flip at an address registered by the entity within the technical buffer
@@ -521,8 +549,8 @@ export function add <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<E
     -- Writing the modified bitmap with the flipped bit associated with the entity
     -- Adding the entity ID to the buffer
      -- The __ecs_is_entity<> function returns a number
-    WRITEINTEGER(techbuffer, offset, mask)
-    WRITEU32(entitybuffer, indexNumber, entity :: __ecs_is_entity<typeof(entity)>)
+    WRITEINTEGER(techbuffer :: buffer, offset, mask)
+    WRITEU32(entitybuffer :: buffer, indexNumber, entity :: __ecs_is_entity<typeof(entity)>)
 
     -- query cache invalid
 end
