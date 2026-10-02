@@ -428,56 +428,101 @@ export function group <T, U> (relation: Entity<T>, target: Entity<U>): Group<Ent
     return id :: Group<Entity<T>, Entity<U>>
 end
 
+-- Adding a single component to a single entity
+-- @param entity - entity ID under the generic API Entity<T>, where T is a number
+-- @param component - component ID under the generic API Entity<U>
+-- @param component - group ID under the generic API Group<>
 export function add <T, U, V> (entity: Entity<T>, component: Entity<U> | Group<Entity<U>, Entity<V>>): ()
+    -- Reading tables within WORLD_ARRAY with fields 1 through 3, where 
+    -- 1 [Entities] is the table of entities
+    -- 2 [Sparse] is the table of references to structures
+    -- 3 [Dense] is the table of component structures
     const entities = _WORLD_ARRAY[ENTITIES] :: Entities
     const sparse = _WORLD_ARRAY[SPARSE] :: Sparse
     const dense = _WORLD_ARRAY[DENSE] :: Dense <U>
 
+    -- Retrieving the bitmasks for the entity (integer) and the component (number)
+    -- The entity is a mask with fields u20 for the first part, u12 for the second part, and the remaining bits
+    -- The component ID is simply a reference
+    -- The __ecs_is_entity<> function returns a number
     local entityId = entities[entity :: __ecs_is_entity<typeof(entity)>] :: u64
     local componentId = sparse[component :: __ecs_is_entity<typeof(component)>] :: u32
 
+    -- Reading the component structure.
     local cmp_struct = dense[componentId] :: Struct <U>
 
+    -- Retrieving the table of technical buffers. Each buffer consists of one chunk
+    -- The buffer size is 640 bytes, or 16 slices of 40 bytes (or 16 slices of 5 integers)
     local tech_struct = cmp_struct[INDEX_COMPONENT_TECH] :: ChunkBuffer
 
+    -- Reading 20 bits and converting the 64-bit value into a number
+    -- The composite position combines the chunk number (0..65_534) and the segment number (0..15)
     local complexPosition = EXTRACT64(entityId, BIT_INTEGER_ZERO, BIT_INTEGER_U20)
     local positionNumber = TONUMBER(complexPosition) -- from 0
 
+    -- Conversion of a composite position into separate components using the following formulas:
+    -- Chunk = composite position // 16, where // denotes integer division (discarding the remainder)
+    -- Segment = composite position - (chunk * 16)
+    -- The number 16 was chosen because it is the maximum number of segments for a single chunk
     local chunk = positionNumber // BIT_NUMBER_U16
     local segment = positionNumber - (chunk * BIT_NUMBER_U16)
 
+    -- Attempt to find a technical chunk buffer. If nothing is found, allocate a new chunk
+    -- This is a rare but expensive operation called a "chunk miss"
+    -- This happens if the meta has chunks ahead of the component
+    -- Footnote: When creating the world, it is worth specifying an entity limit to avoid allocations
     local techbuffer = tech_struct[chunk + 1] :: buffer?
     if not techbuffer then return end
 
+    -- Reading the entity buffer table
     local entity_struct = cmp_struct[INDEX_CHUNK_ENTITY] :: ChunkBuffer
 
+    -- Reading 12 bits from 20 bit and converting the 64-bit value into a number
+    -- Complex index transformation. It combines a block (0..4) and a bitmap (0..63)
     local complexIndex = EXTRACT64(entityId, BIT_INTEGER_U20, BIT_INTEGER_U12)
     local indexNumber = TONUMBER(complexIndex) -- from 0
 
+    -- Decomposition of the composite index into two components using the formulas:
+    -- Block – composite index // 64, where // denotes integer division
+    -- Bitmap – composite index – (block * 64)
+    -- The number 64 was chosen because it is the maximum number of segments for a single block (or, more accurately, a bitmap)
     local block = indexNumber // BIT_NUMBER_U64
     local bitmap = indexNumber - (block * BIT_NUMBER_U64)
 
+    -- Reading the entity buffer. If nothing is found, a segment is allocated
+    -- Note: Segment creation is a lazy process. Allocation occurs immediately upon each new initialization
     local entitybuffer = entity_struct[positionNumber + 1] :: buffer?
     if not entitybuffer then return end
 
+    -- Obtaining the offset where the required bitmap is located
+    -- The value is multiplied by the total weight of one buffer slice and shifted by 8, since an integer is 8 bytes
     local offset = segment * BIT_NUMBER_U40 + (block + 1) * BIT_NUMBER_U8
     local mask = READINTEGER(techbuffer, offset)
 
+    -- If the mask consists entirely of zeros, registration takes place at the segment block level
+    -- The corresponding bit is flipped to 1
     if mask == BIT_INTEGER_ZERO then
+        -- Calculating the required block within the technical buffer
         local segmentOffset = segment * BIT_NUMBER_U40
         local segmentMask = READINTEGER(techbuffer, segmentOffset)
 
+        -- Bit flip
         local intBlock = ICREATE(block)
         segmentMask = XOR(segmentMask, LSHIFT(1i, intBlock))
 
         WRITEINTEGER(techbuffer, segmentOffset, segmentMask)
     end
 
+    -- A bit flip at an address registered by the entity within the technical buffer
+    -- This corresponds to a specific position within a 64-bit number
     local intBitmap = ICREATE(bitmap)
     mask = XOR(mask, LSHIFT(1i, intBitmap))
 
+    -- Writing the modified bitmap with the flipped bit associated with the entity
+    -- Adding the entity ID to the buffer
+     -- The __ecs_is_entity<> function returns a number
     WRITEINTEGER(techbuffer, offset, mask)
-    WRITEU32(entitybuffer, indexNumber, entity :: __ecs_create_entity<typeof(entity)>)
+    WRITEU32(entitybuffer, indexNumber, entity :: __ecs_is_entity<typeof(entity)>)
 
     -- query cache invalid
 end
